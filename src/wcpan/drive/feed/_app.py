@@ -73,6 +73,7 @@ async def _scan_directory(
 
         for entry in entries:
             if is_excluded(entry.name, exclude):
+                _L.debug("scan exclude: %s", entry)
                 continue
             try:
                 st = entry.stat()
@@ -92,8 +93,10 @@ async def _scan_directory(
                 existing_mtime_us = int(existing.mtime.timestamp() * 1_000_000)
                 new_mtime_us = int(mtime.timestamp() * 1_000_000)
                 if existing_mtime_us == new_mtime_us:
+                    _L.debug("scan unchanged: %s", entry)
                     continue  # unchanged
                 # mtime changed — queue update
+                _L.debug("scan update: %s", entry)
                 updated = NodeRecord(
                     node_id=existing.node_id,
                     parent_id=existing.parent_id,
@@ -115,6 +118,7 @@ async def _scan_directory(
                 pending_meta.append((existing.node_id, entry))
             else:
                 # New node
+                _L.debug("scan new %s: %s", "dir" if entry.is_dir() else "file", entry)
                 node = NodeRecord(
                     node_id=entry_id,
                     parent_id=parent_id,
@@ -141,6 +145,7 @@ async def _scan_directory(
         # Per-directory deletion detection using pre-loaded index (no extra DB queries).
         for node_id in children_by_parent.get(parent_id, []):
             if node_id not in dir_seen:
+                _L.debug("scan delete: %s", node_id)
                 pending_deletes.append(node_id)
                 pending_changes.append((node_id, True))
 
@@ -172,6 +177,7 @@ async def _metadata_worker(
     loop = asyncio.get_running_loop()
     while True:
         node_id, path = await metadata_queue.get()
+        _L.debug("metadata dequeue: %s", path)
         try:
             meta = await loop.run_in_executor(pool, compute_file_metadata, path)
             await off_main(
@@ -187,6 +193,7 @@ async def _metadata_worker(
                 ms_duration=meta.ms_duration,
             )
             await off_main(emit_change, node_id, is_removed=False)
+            _L.debug("metadata done: %s mime=%s hash=%s", path, meta.mime_type, meta.hash)
         except Exception:
             _L.exception("metadata failed for %s", path)
 
