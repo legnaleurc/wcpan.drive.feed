@@ -4,7 +4,8 @@ from collections.abc import Callable
 from concurrent.futures import Executor
 from contextlib import closing, contextmanager
 from datetime import datetime, timezone
-from sqlite3 import Row, connect
+from pathlib import Path
+from sqlite3 import DatabaseError, Row, connect
 from typing import Concatenate
 
 from ._types import MergedChange, NodeRecord, RemovedChange, UpdatedChange
@@ -95,7 +96,14 @@ def read_write(dsn: str, *, timeout: float = 5.0):
 
 
 def ensure_schema(dsn: str) -> None:
-    version = get_schema_version(dsn)
+    try:
+        version = get_schema_version(dsn)
+    except DatabaseError:
+        # WAL or SHM files left by a killed process can corrupt the connection.
+        # Deleting them lets SQLite start fresh; uncommitted data is lost but
+        # the main .db file is intact (WAL never modifies it mid-transaction).
+        _remove_wal_files(dsn)
+        version = get_schema_version(dsn)
     if version == 0:
         initialize_db(dsn)
         return
@@ -105,6 +113,11 @@ def ensure_schema(dsn: str) -> None:
             f"expected version {_SCHEMA_VERSION}. "
             "Back up and delete the database file, then restart the server."
         )
+
+
+def _remove_wal_files(dsn: str) -> None:
+    for suffix in ("-wal", "-shm"):
+        Path(dsn + suffix).unlink(missing_ok=True)
 
 
 def initialize_db(dsn: str) -> None:

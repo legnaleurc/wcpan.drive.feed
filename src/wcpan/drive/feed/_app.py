@@ -1,6 +1,6 @@
 import asyncio
 from collections.abc import AsyncGenerator, Generator
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from contextlib import AsyncExitStack, asynccontextmanager, contextmanager
 from datetime import datetime, timezone
 from logging import getLogger
@@ -198,7 +198,19 @@ def _worker_init():
 
 
 @contextmanager
-def _managed_pool() -> Generator[ProcessPoolExecutor, None, None]:
+def _managed_db_pool() -> Generator[ThreadPoolExecutor, None, None]:
+    """Thread pool for DB operations — threads share the process so WAL
+    coordination works correctly and survives unclean shutdowns."""
+    pool = ThreadPoolExecutor(max_workers=1)
+    try:
+        yield pool
+    finally:
+        pool.shutdown(wait=True, cancel_futures=True)
+
+
+@contextmanager
+def _managed_compute_pool() -> Generator[ProcessPoolExecutor, None, None]:
+    """Process pool for CPU-intensive metadata computation only."""
     pool = ProcessPoolExecutor(initializer=_worker_init)
     try:
         yield pool
@@ -209,14 +221,14 @@ def _managed_pool() -> Generator[ProcessPoolExecutor, None, None]:
 async def _background_tasks(
     metadata_queue: asyncio.Queue,
     off_main: OffMainProcess,
-    pool: ProcessPoolExecutor,
+    compute_pool: ProcessPoolExecutor,
     watches: list[str],
     exclude: tuple[str, ...] = (),
 ) -> None:
     from ._watcher import run_watcher
 
     async with asyncio.TaskGroup() as tg:
-        tg.create_task(_metadata_worker(metadata_queue, off_main, pool))
+        tg.create_task(_metadata_worker(metadata_queue, off_main, compute_pool))
         tg.create_task(run_watcher(watches, off_main, metadata_queue, exclude=exclude))
 
 
@@ -224,12 +236,12 @@ async def _background_tasks(
 async def _run_background(
     metadata_queue: asyncio.Queue,
     off_main: OffMainProcess,
-    pool: ProcessPoolExecutor,
+    compute_pool: ProcessPoolExecutor,
     watches: list[str],
     exclude: tuple[str, ...] = (),
 ) -> AsyncGenerator[None, None]:
     task = asyncio.create_task(
-        _background_tasks(metadata_queue, off_main, pool, watches, exclude=exclude)
+        _background_tasks(metadata_queue, off_main, compute_pool, watches, exclude=exclude)
     )
     try:
         yield
@@ -249,9 +261,10 @@ async def _app_lifecycle(app: web.Application) -> AsyncGenerator[None, None]:
         await loop.run_in_executor(None, ensure_schema, dsn)
         await loop.run_in_executor(None, upsert_super_root, dsn)
 
-        # 2. Create process pool and OffMainProcess
-        pool = stack.enter_context(_managed_pool())
-        off_main = OffMainProcess(dsn=dsn, pool=pool)
+        # 2. Create separate pools: threads for DB, processes for CPU work
+        db_pool = stack.enter_context(_managed_db_pool())
+        compute_pool = stack.enter_context(_managed_compute_pool())
+        off_main = OffMainProcess(dsn=dsn, pool=db_pool)
         app[APP_OFF_MAIN] = off_main
 
         # 3. Reconcile: remove watch roots that are no longer in config
@@ -322,7 +335,7 @@ async def _app_lifecycle(app: web.Application) -> AsyncGenerator[None, None]:
             _run_background(
                 metadata_queue,
                 off_main,
-                pool,
+                compute_pool,
                 list(config.watches.values()),
                 config.exclude,
             )
