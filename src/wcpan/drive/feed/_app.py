@@ -262,17 +262,17 @@ async def _app_lifecycle(app: web.Application) -> AsyncGenerator[None, None]:
     dsn = config.database_url
 
     async with AsyncExitStack() as stack:
-        # 1. Initialize DB
-        _L.info("initializing database: %s", dsn)
-        loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, ensure_schema, dsn)
-        await loop.run_in_executor(None, upsert_super_root, dsn)
-
-        # 2. Create separate pools: threads for DB, processes for CPU work
+        # 1. Create separate pools: threads for DB, processes for CPU work
         db_pool = stack.enter_context(_managed_db_pool())
         compute_pool = stack.enter_context(_managed_compute_pool())
         off_main = OffMainProcess(dsn=dsn, pool=db_pool)
         app[APP_OFF_MAIN] = off_main
+
+        # 2. Initialize DB — routed through db_pool so all subsequent ops
+        #    share the same thread and see the same WAL snapshot.
+        _L.info("initializing database: %s", dsn)
+        await off_main(ensure_schema)
+        await off_main(upsert_super_root)
 
         # 3. Reconcile: remove watch roots that are no longer in config
         config_root_ids: set[str] = set()
