@@ -14,6 +14,7 @@ from ._db import (
     bulk_delete_nodes,
     bulk_emit_changes,
     bulk_upsert_nodes,
+    checkpoint,
     emit_change,
     ensure_schema,
     get_all_node_ids_by_parent,
@@ -326,7 +327,11 @@ async def _app_lifecycle(app: web.Application) -> AsyncGenerator[None, None]:
                 off_main, watch_root, watch_root_id, metadata_queue, config.exclude
             )
 
-        # 6. Build watch_root_paths mapping (node_id → real Path)
+        # 6. Checkpoint: merge WAL into main db so committed scan data survives
+        #    a forced container stop without needing the WAL file.
+        await off_main(checkpoint)
+
+        # 7. Build watch_root_paths mapping (node_id → real Path)
         watch_root_paths: dict[str, Path] = {}
         for watch_path_str in config.watches.values():
             watch_root = Path(watch_path_str).resolve()
@@ -337,7 +342,7 @@ async def _app_lifecycle(app: web.Application) -> AsyncGenerator[None, None]:
                 pass
         app[APP_WATCH_ROOT_PATHS] = watch_root_paths
 
-        # 7. Start background tasks under a single TaskGroup
+        # 8. Start background tasks under a single TaskGroup
         await stack.enter_async_context(
             _run_background(
                 metadata_queue,

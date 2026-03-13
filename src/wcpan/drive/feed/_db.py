@@ -4,8 +4,7 @@ from collections.abc import Callable
 from concurrent.futures import Executor
 from contextlib import closing, contextmanager
 from datetime import datetime, timezone
-from pathlib import Path
-from sqlite3 import DatabaseError, Row, connect
+from sqlite3 import Row, connect
 from typing import Concatenate
 
 from ._types import MergedChange, NodeRecord, RemovedChange, UpdatedChange
@@ -96,14 +95,7 @@ def read_write(dsn: str, *, timeout: float = 5.0):
 
 
 def ensure_schema(dsn: str) -> None:
-    try:
-        version = get_schema_version(dsn)
-    except DatabaseError:
-        # WAL or SHM files left by a killed process can corrupt the connection.
-        # Deleting them lets SQLite start fresh; uncommitted data is lost but
-        # the main .db file is intact (WAL never modifies it mid-transaction).
-        _remove_wal_files(dsn)
-        version = get_schema_version(dsn)
+    version = get_schema_version(dsn)
     if version == 0:
         initialize_db(dsn)
         return
@@ -115,9 +107,17 @@ def ensure_schema(dsn: str) -> None:
         )
 
 
-def _remove_wal_files(dsn: str) -> None:
-    for suffix in ("-wal", "-shm"):
-        Path(dsn + suffix).unlink(missing_ok=True)
+def checkpoint(dsn: str) -> None:
+    """Merge WAL into the main database file and truncate the WAL.
+
+    Call this after the initial scan so the WAL is empty before the process
+    can be killed. SQLite WAL mode keeps committed data in the WAL until a
+    checkpoint runs; if the process is killed first, committed-but-not-
+    checkpointed data survives in the WAL and is replayed on next open — but
+    only if the WAL file is not deleted.
+    """
+    with read_write(dsn) as cursor:
+        cursor.execute("PRAGMA wal_checkpoint(TRUNCATE)")
 
 
 def initialize_db(dsn: str) -> None:
