@@ -95,10 +95,39 @@ class TestOnFileStub(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(node.hash, "")
             pool.shutdown(wait=False)
 
+    async def test_emits_change(self):
+        with create_db_sandbox() as dsn, create_fs_sandbox() as tmp:
+            f = tmp / "hello.txt"
+            f.write_text("hello")
+            off_main, pool = _make_off_main(dsn)
+
+            _insert_dir_node(dsn, tmp, SUPER_ROOT_ID)
+            await _on_file_stub(f, off_main)
+
+            file_id = node_id_from_stat(f.stat())
+            changes, _ = get_changes_since(dsn, 0)
+            node_ids = {c.node.node_id if not c.removed else c.node_id for c in changes}
+            self.assertIn(file_id, node_ids)
+            pool.shutdown(wait=False)
+
     async def test_missing_file_is_ignored(self):
         with create_db_sandbox() as dsn, create_fs_sandbox() as tmp:
             off_main, pool = _make_off_main(dsn)
             await _on_file_stub(tmp / "nonexistent.txt", off_main)
+            pool.shutdown(wait=False)
+
+    async def test_parent_not_in_db_is_ignored(self):
+        with create_db_sandbox() as dsn, create_fs_sandbox() as tmp:
+            sub = tmp / "subdir"
+            sub.mkdir()
+            f = sub / "hello.txt"
+            f.write_text("hello")
+            # tmp is NOT in DB — only SUPER_ROOT is
+            off_main, pool = _make_off_main(dsn)
+            await _on_file_stub(f, off_main)
+
+            node = get_node_by_id(dsn, node_id_from_stat(f.stat()))
+            self.assertIsNone(node)
             pool.shutdown(wait=False)
 
 
@@ -218,6 +247,28 @@ class TestOnMove(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(node.name, "dstdir")
             pool.shutdown(wait=False)
 
+    async def test_move_to_unknown_parent_is_ignored(self):
+        """Moving to a destination whose parent is not in DB emits nothing."""
+        with create_db_sandbox() as dsn, create_fs_sandbox() as tmp:
+            outside = tmp / "outside"
+            outside.mkdir()
+            src = outside / "srcdir"
+            src.mkdir()
+            # outside is NOT in DB; only tmp is
+            parent_id = _insert_dir_node(dsn, tmp, SUPER_ROOT_ID)
+            dir_id = _insert_dir_node(dsn, src, parent_id)
+
+            dst = outside / "dstdir"
+            src.rename(dst)
+
+            off_main, pool = _make_off_main(dsn)
+            await _on_move(src, dst, True, off_main)
+
+            changes, _ = get_changes_since(dsn, 0)
+            node_ids = {c.node.node_id if not c.removed else c.node_id for c in changes}
+            self.assertNotIn(dir_id, node_ids)
+            pool.shutdown(wait=False)
+
 
 class TestOnDirCreated(unittest.IsolatedAsyncioTestCase):
     async def test_creates_node(self):
@@ -233,6 +284,22 @@ class TestOnDirCreated(unittest.IsolatedAsyncioTestCase):
             node = get_node_by_id(dsn, node_id_from_stat(new_dir.stat()))
             self.assertIsNotNone(node)
             self.assertTrue(node.is_directory)
+            pool.shutdown(wait=False)
+
+    async def test_emits_change(self):
+        with create_db_sandbox() as dsn, create_fs_sandbox() as tmp:
+            new_dir = tmp / "newdir"
+            new_dir.mkdir()
+            _insert_dir_node(dsn, tmp, SUPER_ROOT_ID)
+
+            off_main, pool = _make_off_main(dsn)
+            mq: asyncio.Queue = asyncio.Queue()
+            await _on_dir_created(new_dir, off_main, mq, scan_contents=False)
+
+            dir_id = node_id_from_stat(new_dir.stat())
+            changes, _ = get_changes_since(dsn, 0)
+            node_ids = {c.node.node_id if not c.removed else c.node_id for c in changes}
+            self.assertIn(dir_id, node_ids)
             pool.shutdown(wait=False)
 
     async def test_scan_contents_on_move_in(self):

@@ -96,7 +96,7 @@ async def _on_close_write(
     existing = await off_main(get_node_by_id, node_id)
     if existing is None:
         # Missed the CREATE — insert stub now
-        await _on_file_stub(path, off_main)
+        await _on_file_stub(path, off_main, exclude)
         existing = await off_main(get_node_by_id, node_id)
         if existing is None:
             return
@@ -169,6 +169,8 @@ async def _on_move(
     if existing is None:
         return
     new_parent = await _get_parent_node_id(dst, off_main)
+    if new_parent is None:
+        return
     node = NodeRecord(
         node_id=existing.node_id,
         parent_id=new_parent,
