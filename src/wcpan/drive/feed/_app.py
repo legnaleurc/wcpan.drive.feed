@@ -194,7 +194,9 @@ async def _metadata_worker(
                 ms_duration=meta.ms_duration,
             )
             await off_main(emit_change, node_id, is_removed=False)
-            _L.debug("metadata done: %s mime=%s hash=%s", path, meta.mime_type, meta.hash)
+            _L.debug(
+                "metadata done: %s mime=%s hash=%s", path, meta.mime_type, meta.hash
+            )
         except Exception:
             _L.exception("metadata failed for %s", path)
 
@@ -249,7 +251,9 @@ async def _run_background(
     exclude: tuple[str, ...] = (),
 ) -> AsyncGenerator[None, None]:
     task = asyncio.create_task(
-        _background_tasks(metadata_queue, off_main, compute_pool, watches, exclude=exclude)
+        _background_tasks(
+            metadata_queue, off_main, compute_pool, watches, exclude=exclude
+        )
     )
     try:
         yield

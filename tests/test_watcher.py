@@ -3,6 +3,7 @@ import unittest
 from datetime import datetime, timezone
 from pathlib import Path
 
+from wcpan.drive.feed._app import _scan_directory
 from wcpan.drive.feed._db import (
     SUPER_ROOT_ID,
     emit_change,
@@ -12,7 +13,6 @@ from wcpan.drive.feed._db import (
     upsert_node,
 )
 from wcpan.drive.feed._types import NodeRecord
-from wcpan.drive.feed._app import _scan_directory
 from wcpan.drive.feed._watcher import (
     _on_close_write,
     _on_delete,
@@ -449,7 +449,9 @@ class TestExcludeUnderExcludedFolder(unittest.IsolatedAsyncioTestCase):
             await _on_file_stub(thumb, off_main)
 
             node = get_node_by_id(dsn, node_id_from_stat(thumb.stat()))
-            self.assertIsNone(node)  # currently fails: node inserted with parent_id=NULL
+            self.assertIsNone(
+                node
+            )  # currently fails: node inserted with parent_id=NULL
             pool.shutdown(wait=False)
 
     async def test_dir_created_under_excluded_dir(self):
@@ -466,7 +468,9 @@ class TestExcludeUnderExcludedFolder(unittest.IsolatedAsyncioTestCase):
             await _on_dir_created(sub, off_main, mq, scan_contents=False)
 
             node = get_node_by_id(dsn, node_id_from_stat(sub.stat()))
-            self.assertIsNone(node)  # currently fails: node inserted with parent_id=NULL
+            self.assertIsNone(
+                node
+            )  # currently fails: node inserted with parent_id=NULL
             pool.shutdown(wait=False)
 
     async def test_close_write_under_excluded_dir(self):
@@ -483,7 +487,9 @@ class TestExcludeUnderExcludedFolder(unittest.IsolatedAsyncioTestCase):
             await _on_close_write(thumb, off_main, mq)
 
             node = get_node_by_id(dsn, node_id_from_stat(thumb.stat()))
-            self.assertIsNone(node)  # currently fails: node inserted with parent_id=NULL
+            self.assertIsNone(
+                node
+            )  # currently fails: node inserted with parent_id=NULL
             pool.shutdown(wait=False)
 
 

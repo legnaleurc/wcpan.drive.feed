@@ -19,7 +19,15 @@ def compute_file_metadata(path: Path) -> FileMetadata:
     hash_ = _compute_md5(path)
     _L.debug("hash: %s path: %s", hash_, path)
     is_image, is_video, w, h, ms = _get_media_dims(path, mime_type, MediaInfo)
-    _L.debug("media dims: is_image=%s is_video=%s w=%d h=%d ms=%d path: %s", is_image, is_video, w, h, ms, path)
+    _L.debug(
+        "media dims: is_image=%s is_video=%s w=%d h=%d ms=%d path: %s",
+        is_image,
+        is_video,
+        w,
+        h,
+        ms,
+        path,
+    )
     return FileMetadata(
         mime_type=mime_type,
         hash=hash_,
