@@ -152,25 +152,29 @@ async def _on_move(
     is_dir: bool,
     off_main: OffMainProcess,
     exclude: tuple[str, ...] = (),
-) -> None:
+) -> bool:
     """Update parent_id + name for a renamed/moved node (no re-hash needed).
 
     Watch updates for directories are handled automatically by RecursiveInotify.
+    Returns False if the source node was not in the DB (caller should treat dst
+    as a newly-arrived file/directory instead).
     """
     if is_excluded(dst.name, exclude):
-        return
+        return True
     _L.debug("move: %s -> %s", src, dst)
     try:
         st = dst.stat()
     except OSError:
-        return
+        return True
     node_id = node_id_from_stat(st)
     existing = await off_main(get_node_by_id, node_id)
     if existing is None:
-        return
+        # Source was never tracked (e.g. temp file that was excluded).
+        # Signal the caller to treat dst as a new arrival.
+        return False
     new_parent = await _get_parent_node_id(dst, off_main)
     if new_parent is None:
-        return
+        return True
     node = NodeRecord(
         node_id=existing.node_id,
         parent_id=new_parent,
@@ -188,6 +192,7 @@ async def _on_move(
         ms_duration=existing.ms_duration,
     )
     await off_main(upsert_node_and_emit_change, node)
+    return True
 
 
 async def _on_dir_created(
@@ -322,11 +327,21 @@ async def run_watcher(
                     pending_from[event.cookie] = (path, is_dir)
 
                 elif Mask.MOVED_TO in event.mask:
+                    # Assume new arrival unless _on_move confirms it was tracked.
+                    is_new_arrival = True
                     if event.cookie in pending_from:
                         src_path, _ = pending_from.pop(event.cookie)
-                        await _on_move(src_path, path, is_dir, off_main, exclude)
-                    else:
-                        # Moved in from outside watched area
+                        is_new_arrival = not await _on_move(
+                            src_path, path, is_dir, off_main, exclude
+                        )
+                        if is_new_arrival:
+                            _L.debug(
+                                "move source untracked, treating dst as new: %s", path
+                            )
+
+                    if is_new_arrival:
+                        # Moved in from outside watched area, or source was an
+                        # untracked temp file (e.g. excluded upload staging file).
                         if is_dir:
                             await _on_dir_created(
                                 path,

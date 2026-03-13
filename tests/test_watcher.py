@@ -247,6 +247,26 @@ class TestOnMove(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(node.name, "dstdir")
             pool.shutdown(wait=False)
 
+    async def test_untracked_source_returns_false(self):
+        """Moving an untracked file (e.g. excluded temp) returns False so caller
+        can treat the destination as a new arrival."""
+        with create_db_sandbox() as dsn, create_fs_sandbox() as tmp:
+            src = tmp / "._tmp_upload"
+            src.write_text("content")
+            _insert_dir_node(dsn, tmp, SUPER_ROOT_ID)
+            # src is NOT inserted into DB (simulates an excluded temp file)
+
+            dst = tmp / "final.txt"
+            src.rename(dst)
+
+            off_main, pool = _make_off_main(dsn)
+            result = await _on_move(src, dst, False, off_main)
+
+            self.assertFalse(result)
+            # dst should also not be in DB — caller is responsible for inserting it
+            self.assertIsNone(get_node_by_id(dsn, node_id_from_stat(dst.stat())))
+            pool.shutdown(wait=False)
+
     async def test_move_to_unknown_parent_is_ignored(self):
         """Moving to a destination whose parent is not in DB emits nothing."""
         with create_db_sandbox() as dsn, create_fs_sandbox() as tmp:
