@@ -213,6 +213,74 @@ async def _background[T](
         task.cancel()
 
 
+async def _reconcile_stale_roots(
+    off_main: OffMainThread,
+    config: Config,
+) -> None:
+    config_root_ids: set[str] = set()
+    for p in config.watches.values():
+        try:
+            config_root_ids.add(node_id_from_stat(Path(p).resolve().stat()))
+        except OSError:
+            pass
+    db_root_ids = set(await off_main(get_all_node_ids_by_parent, SUPER_ROOT_ID))
+    for stale_id in db_root_ids - config_root_ids:
+        _L.info("removing stale watch root: %s", stale_id)
+        child_ids = await off_main(get_all_node_ids_under, stale_id)
+        all_ids = child_ids + [stale_id]
+        await off_main(bulk_emit_changes, [(nid, True) for nid in all_ids])
+        await off_main(bulk_delete_nodes, all_ids)
+
+
+async def _scan_all_watch_paths(
+    off_main: OffMainThread,
+    config: Config,
+    metadata_queue: asyncio.Queue[tuple[str, Path]],
+) -> None:
+    for namespace, watch_path_str in config.watches.items():
+        watch_root = Path(watch_path_str).resolve()
+        try:
+            st = watch_root.stat()
+        except OSError:
+            continue
+        watch_root_id = node_id_from_stat(st)
+        ctime, mtime = stat_to_times(st)
+        root_node = NodeRecord(
+            node_id=watch_root_id,
+            parent_id=SUPER_ROOT_ID,
+            name=namespace,
+            is_directory=True,
+            ctime=ctime,
+            mtime=mtime,
+            mime_type="",
+            hash="",
+            size=0,
+            is_image=False,
+            is_video=False,
+            width=0,
+            height=0,
+            ms_duration=0,
+        )
+        await off_main(upsert_node, root_node)
+        await off_main(emit_change, watch_root_id, is_removed=False)
+        _L.info("scanning watch root: %s -> %s", namespace, watch_root)
+        await _scan_directory(
+            off_main, watch_root, watch_root_id, metadata_queue, config.exclude
+        )
+
+
+def _build_watch_root_paths(config: Config) -> dict[str, Path]:
+    result: dict[str, Path] = {}
+    for watch_path_str in config.watches.values():
+        watch_root = Path(watch_path_str).resolve()
+        try:
+            st = watch_root.stat()
+            result[node_id_from_stat(st)] = watch_root
+        except OSError:
+            pass
+    return result
+
+
 async def _app_lifecycle(app: web.Application) -> AsyncGenerator[None, None]:
     config: Config = app[APP_CONFIG]
     dsn = config.database_url
@@ -230,71 +298,20 @@ async def _app_lifecycle(app: web.Application) -> AsyncGenerator[None, None]:
         await off_main(upsert_super_root)
 
         # 3. Reconcile: remove watch roots that are no longer in config
-        config_root_ids: set[str] = set()
-        for p in config.watches.values():
-            try:
-                config_root_ids.add(node_id_from_stat(Path(p).resolve().stat()))
-            except OSError:
-                pass
-        db_root_ids = set(await off_main(get_all_node_ids_by_parent, SUPER_ROOT_ID))
-        for stale_id in db_root_ids - config_root_ids:
-            _L.info("removing stale watch root: %s", stale_id)
-            child_ids = await off_main(get_all_node_ids_under, stale_id)
-            all_ids = child_ids + [stale_id]
-            await off_main(bulk_emit_changes, [(nid, True) for nid in all_ids])
-            await off_main(bulk_delete_nodes, all_ids)
+        await _reconcile_stale_roots(off_main, config)
 
         # 4. Metadata queue
         metadata_queue: asyncio.Queue[tuple[str, Path]] = asyncio.Queue()
 
         # 5. Scan each watch path
-        for namespace, watch_path_str in config.watches.items():
-            watch_root = Path(watch_path_str).resolve()
-
-            try:
-                st = watch_root.stat()
-            except OSError:
-                continue
-
-            watch_root_id = node_id_from_stat(st)
-            ctime, mtime = stat_to_times(st)
-            root_node = NodeRecord(
-                node_id=watch_root_id,
-                parent_id=SUPER_ROOT_ID,
-                name=namespace,
-                is_directory=True,
-                ctime=ctime,
-                mtime=mtime,
-                mime_type="",
-                hash="",
-                size=0,
-                is_image=False,
-                is_video=False,
-                width=0,
-                height=0,
-                ms_duration=0,
-            )
-            await off_main(upsert_node, root_node)
-            await off_main(emit_change, watch_root_id, is_removed=False)
-            _L.info("scanning watch root: %s -> %s", namespace, watch_root)
-            await _scan_directory(
-                off_main, watch_root, watch_root_id, metadata_queue, config.exclude
-            )
+        await _scan_all_watch_paths(off_main, config, metadata_queue)
 
         # 6. Checkpoint: merge WAL into main db so committed scan data survives
         #    a forced container stop without needing the WAL file.
         await off_main(checkpoint)
 
         # 7. Build watch_root_paths mapping (node_id → real Path)
-        watch_root_paths: dict[str, Path] = {}
-        for watch_path_str in config.watches.values():
-            watch_root = Path(watch_path_str).resolve()
-            try:
-                st = watch_root.stat()
-                watch_root_paths[node_id_from_stat(st)] = watch_root
-            except OSError:
-                pass
-        app[APP_WATCH_ROOT_PATHS] = watch_root_paths
+        app[APP_WATCH_ROOT_PATHS] = _build_watch_root_paths(config)
 
         # 8. Start background tasks under a single TaskGroup
         from ._watcher import run_watcher
