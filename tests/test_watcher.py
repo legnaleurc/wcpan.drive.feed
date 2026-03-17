@@ -15,6 +15,8 @@ from wcpan.drive.feed._db import (
 from wcpan.drive.feed._lib import is_removed_change
 from wcpan.drive.feed._types import NodeRecord
 from wcpan.drive.feed._watcher import (
+    _events_with_move_timeout,
+    _flush_pending_moves,
     _on_close_write,
     _on_delete,
     _on_dir_created,
@@ -438,6 +440,69 @@ class TestExcludeOnEvents(unittest.IsolatedAsyncioTestCase):
             assert node
             self.assertEqual(node.name, "mydir")
             pool.shutdown(wait=False)
+
+
+class TestFlushPendingMoves(unittest.IsolatedAsyncioTestCase):
+    async def test_flushes_stale_move_as_delete(self):
+        with create_db_sandbox() as dsn, create_fs_sandbox() as tmp:
+            f = tmp / "moved.txt"
+            f.write_text("data")
+            parent_id = _insert_dir_node(dsn, tmp, SUPER_ROOT_ID)
+            file_id = _insert_file_node(dsn, f, parent_id)
+            f.unlink()
+
+            pending_from = {1: (f, False)}
+            off_main, pool = _make_off_main(dsn)
+            await _flush_pending_moves(pending_from, off_main)
+
+            self.assertEqual(pending_from, {})
+            changes, _ = get_changes_since(dsn, 0)
+            removed = [
+                c for c in changes if is_removed_change(c) and c.node_id == file_id
+            ]
+            self.assertEqual(len(removed), 1)
+            pool.shutdown(wait=False)
+
+    async def test_empty_pending_is_noop(self):
+        with create_db_sandbox() as dsn, create_fs_sandbox() as tmp:
+            off_main, pool = _make_off_main(dsn)
+            pending_from = {}
+            await _flush_pending_moves(pending_from, off_main)
+            self.assertEqual(pending_from, {})
+            pool.shutdown(wait=False)
+
+
+class TestEventsWithMoveTimeout(unittest.IsolatedAsyncioTestCase):
+    async def test_passes_through_events(self):
+        sentinel = object()
+
+        async def source():
+            yield sentinel
+
+        pending_from = {}
+        result = []
+        async for event in _events_with_move_timeout(
+            source(), pending_from, stale_timeout=0.05
+        ):
+            result.append(event)
+
+        self.assertEqual(result, [sentinel])
+
+    async def test_yields_none_on_timeout_when_pending(self):
+        async def never_yields():
+            await asyncio.sleep(10)
+            return
+            yield  # makes this an async generator
+
+        pending_from = {1: (Path("/some/path"), False)}
+        result = []
+        async for event in _events_with_move_timeout(
+            never_yields(), pending_from, stale_timeout=0.05
+        ):
+            result.append(event)
+            break  # stop after the timeout-injected None
+
+        self.assertEqual(result, [None])
 
 
 class TestExcludeUnderExcludedFolder(unittest.IsolatedAsyncioTestCase):
