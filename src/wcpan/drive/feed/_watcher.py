@@ -284,6 +284,33 @@ def _node_id_for(path: Path) -> str | None:
         return None
 
 
+async def _flush_pending_moves(
+    pending_from: dict[int, tuple[Path, bool]], off_main: OffMainProcess
+) -> None:
+    for cookie, (stale_path, stale_is_dir) in list(pending_from.items()):
+        del pending_from[cookie]
+        try:
+            await _on_delete(stale_path, stale_is_dir, off_main)
+        except Exception:
+            _L.exception("delete failed for stale move: %s", stale_path)
+
+
+async def _events_with_move_timeout(source, pending_from, stale_timeout=1.0):
+    """Yield inotify events, injecting None when a pending MOVED_FROM goes
+    unmatched for stale_timeout seconds (file moved outside watched area).
+    """
+    src = aiter(source)
+    while True:
+        timeout = stale_timeout if pending_from else None
+        try:
+            async with asyncio.timeout(timeout):
+                yield await anext(src)
+        except TimeoutError:
+            yield None
+        except StopAsyncIteration:
+            return
+
+
 async def run_watcher(
     watch_paths: list[str],
     off_main: OffMainProcess,
@@ -299,8 +326,18 @@ async def run_watcher(
         for watch_path_str in watch_paths:
             inotify.add_recursive_watch(Path(watch_path_str).resolve(), _MASK)
 
-        async for event in inotify:
-            if event.path is None or Mask.IGNORED in event.mask:
+        async for event in _events_with_move_timeout(inotify, pending_from):
+            if event is None:
+                await _flush_pending_moves(pending_from, off_main)
+                continue
+
+            if event.path is None:
+                if Mask.Q_OVERFLOW in event.mask:
+                    _L.warning(
+                        "inotify queue overflow — some filesystem events may have been missed"
+                    )
+                continue
+            if Mask.IGNORED in event.mask:
                 continue
 
             is_dir = Mask.ISDIR in event.mask
@@ -308,12 +345,7 @@ async def run_watcher(
 
             # Flush unmatched MOVED_FROM entries as deletes
             if Mask.MOVED_TO not in event.mask:
-                for cookie, (stale_path, stale_is_dir) in list(pending_from.items()):
-                    del pending_from[cookie]
-                    try:
-                        await _on_delete(stale_path, stale_is_dir, off_main)
-                    except Exception:
-                        _L.exception("delete failed for stale move: %s", stale_path)
+                await _flush_pending_moves(pending_from, off_main)
 
             try:
                 _L.debug("event %s: %s", event.mask, path)
