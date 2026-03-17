@@ -2,7 +2,7 @@ import asyncio
 from logging import getLogger
 from pathlib import Path
 
-from asyncinotify import Mask, RecursiveInotify
+from asyncinotify import Inotify, Mask, RecursiveInotify
 
 
 _L = getLogger(__name__)
@@ -295,7 +295,11 @@ async def _flush_pending_moves(
             _L.exception("delete failed for stale move: %s", stale_path)
 
 
-async def _events_with_move_timeout(source, pending_from, stale_timeout=1.0):
+async def _events_with_move_timeout(
+    source: Inotify,
+    pending_from: dict[int, tuple[Path, bool]],
+    stale_timeout: float = 1.0,
+):
     """Yield inotify events, injecting None when a pending MOVED_FROM goes
     unmatched for stale_timeout seconds (file moved outside watched area).
     """
