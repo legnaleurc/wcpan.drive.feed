@@ -1,8 +1,12 @@
+import asyncio
 import unittest
+import uuid
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
 from wcpan.drive.feed._db import (
     SUPER_ROOT_ID,
+    OffMainThread,
     bulk_delete_nodes,
     bulk_emit_changes,
     bulk_upsert_nodes,
@@ -12,6 +16,7 @@ from wcpan.drive.feed._db import (
     get_cursor,
     get_node_by_id,
     upsert_node,
+    upsert_node_and_emit_change,
 )
 from wcpan.drive.feed._lib import is_updated_change
 from wcpan.drive.feed._types import NodeRecord
@@ -233,6 +238,61 @@ class TestBulkEmitChanges(unittest.TestCase):
     def test_empty_list_is_noop(self):
         with create_db_sandbox() as dsn:
             bulk_emit_changes(dsn, [])  # should not raise
+
+
+def _make_file_node(i: int, parent_id: str = SUPER_ROOT_ID) -> NodeRecord:
+    return NodeRecord(
+        node_id=str(uuid.uuid4()),
+        parent_id=parent_id,
+        name=f"file-{i:04d}.txt",
+        is_directory=False,
+        ctime=_NOW,
+        mtime=_NOW,
+        mime_type="text/plain",
+        hash=f"hash-{i:04d}",
+        size=i,
+        is_image=False,
+        is_video=False,
+        width=0,
+        height=0,
+        ms_duration=0,
+    )
+
+
+class TestConcurrentReadWrite(unittest.IsolatedAsyncioTestCase):
+    async def test_concurrent_writes_do_not_corrupt(self):
+        with create_db_sandbox() as dsn:
+            nodes = [_make_file_node(i) for i in range(50)]
+            pool = ThreadPoolExecutor(max_workers=4)
+            try:
+                off_main = OffMainThread(dsn=dsn, pool=pool)
+                await asyncio.gather(
+                    *(off_main(upsert_node_and_emit_change, node) for node in nodes)
+                )
+            finally:
+                pool.shutdown(wait=True, cancel_futures=True)
+            result = get_all_nodes(dsn)
+            # 50 inserted nodes + super root
+            self.assertEqual(len(result), 51)
+            for node in nodes:
+                self.assertIn(node.node_id, result)
+
+    async def test_concurrent_reads_and_writes_are_stable(self):
+        with create_db_sandbox() as dsn:
+            nodes = [_make_file_node(i) for i in range(50)]
+            pool = ThreadPoolExecutor(max_workers=4)
+            try:
+                off_main = OffMainThread(dsn=dsn, pool=pool)
+                writes = [off_main(upsert_node_and_emit_change, node) for node in nodes]
+                reads = [off_main(get_all_nodes) for _ in range(10)]
+                tasks = writes + reads
+                await asyncio.gather(*tasks)
+            finally:
+                pool.shutdown(wait=True, cancel_futures=True)
+            result = get_all_nodes(dsn)
+            self.assertEqual(len(result), 51)
+            for node in nodes:
+                self.assertIn(node.node_id, result)
 
 
 class TestBulkDeleteNodes(unittest.TestCase):

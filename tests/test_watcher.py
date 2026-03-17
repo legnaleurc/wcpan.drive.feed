@@ -30,10 +30,10 @@ from ._lib import create_db_sandbox, create_fs_sandbox, node_id_from_change
 def _make_off_main(dsn: str):
     from concurrent.futures import ThreadPoolExecutor
 
-    from wcpan.drive.feed._db import OffMainProcess
+    from wcpan.drive.feed._db import OffMainThread
 
     pool = ThreadPoolExecutor(max_workers=1)
-    return OffMainProcess(dsn=dsn, pool=pool), pool
+    return OffMainThread(dsn=dsn, pool=pool), pool
 
 
 def _insert_dir_node(dsn: str, path: Path, parent_id: str) -> str:
