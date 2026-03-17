@@ -1,5 +1,5 @@
 import asyncio
-from collections.abc import AsyncGenerator, Generator
+from collections.abc import AsyncGenerator, Coroutine, Generator
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import AsyncExitStack, asynccontextmanager, contextmanager
 from logging import getLogger
@@ -202,34 +202,15 @@ def _managed_pool() -> Generator[ThreadPoolExecutor, None, None]:
         pool.shutdown(wait=True, cancel_futures=True)
 
 
-async def _background_tasks(
-    metadata_queue: asyncio.Queue[tuple[str, Path]],
-    off_main: OffMainThread,
-    watches: list[str],
-    exclude: tuple[str, ...] = (),
-) -> None:
-    from ._watcher import run_watcher
-
-    async with asyncio.TaskGroup() as tg:
-        tg.create_task(_metadata_worker(metadata_queue, off_main))
-        tg.create_task(run_watcher(watches, off_main, metadata_queue, exclude=exclude))
-
-
 @asynccontextmanager
-async def _run_background(
-    metadata_queue: asyncio.Queue[tuple[str, Path]],
-    off_main: OffMainThread,
-    watches: list[str],
-    exclude: tuple[str, ...] = (),
+async def _background[T](
+    group: asyncio.TaskGroup, c: Coroutine[None, None, T]
 ) -> AsyncGenerator[None, None]:
-    task = asyncio.create_task(
-        _background_tasks(metadata_queue, off_main, watches, exclude=exclude)
-    )
+    task = group.create_task(c)
     try:
         yield
     finally:
         task.cancel()
-        await asyncio.gather(task, return_exceptions=True)
 
 
 async def _app_lifecycle(app: web.Application) -> AsyncGenerator[None, None]:
@@ -316,12 +297,21 @@ async def _app_lifecycle(app: web.Application) -> AsyncGenerator[None, None]:
         app[APP_WATCH_ROOT_PATHS] = watch_root_paths
 
         # 8. Start background tasks under a single TaskGroup
+        from ._watcher import run_watcher
+
+        group = await stack.enter_async_context(asyncio.TaskGroup())
         await stack.enter_async_context(
-            _run_background(
-                metadata_queue,
-                off_main,
-                list(config.watches.values()),
-                config.exclude,
+            _background(group, _metadata_worker(metadata_queue, off_main))
+        )
+        await stack.enter_async_context(
+            _background(
+                group,
+                run_watcher(
+                    list(config.watches.values()),
+                    off_main,
+                    metadata_queue,
+                    exclude=config.exclude,
+                ),
             )
         )
 
