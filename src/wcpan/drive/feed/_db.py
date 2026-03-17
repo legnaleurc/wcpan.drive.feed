@@ -52,7 +52,7 @@ def node_id_from_stat(st: os.stat_result) -> str:
     return str(uuid.uuid5(uuid.NAMESPACE_URL, f"{st.st_dev}:{st.st_ino}"))
 
 
-class OffMainProcess:
+class OffMainThread:
     def __init__(self, *, dsn: str, pool: Executor) -> None:
         self._dsn = dsn
         self._pool = pool
@@ -66,6 +66,15 @@ class OffMainProcess:
         bound = partial(fn, self._dsn, *args, **kwargs)
         loop = get_running_loop()
         return await loop.run_in_executor(self._pool, bound)
+
+    async def run[**A, R](
+        self, fn: Callable[A, R], *args: A.args, **kwargs: A.kwargs
+    ) -> R:
+        from asyncio import get_running_loop
+        from functools import partial
+
+        loop = get_running_loop()
+        return await loop.run_in_executor(self._pool, partial(fn, *args, **kwargs))
 
 
 @contextmanager

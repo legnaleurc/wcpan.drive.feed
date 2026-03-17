@@ -8,7 +8,7 @@ from asyncinotify import Mask, RecursiveInotify
 _L = getLogger(__name__)
 
 from ._db import (
-    OffMainProcess,
+    OffMainThread,
     delete_nodes_and_emit_changes,
     get_all_node_ids_under,
     get_node_by_id,
@@ -26,7 +26,7 @@ from ._types import NodeRecord
 _MASK = Mask.CREATE | Mask.DELETE | Mask.CLOSE_WRITE | Mask.MOVED_FROM | Mask.MOVED_TO
 
 
-async def _get_parent_node_id(path: Path, off_main: OffMainProcess) -> str | None:
+async def _get_parent_node_id(path: Path, off_main: OffMainThread) -> str | None:
     try:
         st = path.parent.stat()
     except OSError:
@@ -37,7 +37,7 @@ async def _get_parent_node_id(path: Path, off_main: OffMainProcess) -> str | Non
 
 
 async def _on_file_stub(
-    path: Path, off_main: OffMainProcess, exclude: tuple[str, ...] = ()
+    path: Path, off_main: OffMainThread, exclude: tuple[str, ...] = ()
 ) -> None:
     """Insert a stub node (hash='') on IN_CREATE for a file."""
     if is_excluded(path.name, exclude):
@@ -73,7 +73,7 @@ async def _on_file_stub(
 
 async def _on_close_write(
     path: Path,
-    off_main: OffMainProcess,
+    off_main: OffMainThread,
     metadata_queue: asyncio.Queue[tuple[str, Path]],
     exclude: tuple[str, ...] = (),
 ) -> None:
@@ -117,7 +117,7 @@ async def _on_close_write(
 async def _on_delete(
     path: Path,
     is_dir: bool,
-    off_main: OffMainProcess,
+    off_main: OffMainThread,
 ) -> None:
     """Emit remove for a deleted file or directory (recursively for dirs).
 
@@ -144,7 +144,7 @@ async def _on_move(
     src: Path,
     dst: Path,
     is_dir: bool,
-    off_main: OffMainProcess,
+    off_main: OffMainThread,
     exclude: tuple[str, ...] = (),
 ) -> bool:
     """Update parent_id + name for a renamed/moved node (no re-hash needed).
@@ -191,7 +191,7 @@ async def _on_move(
 
 async def _on_dir_created(
     path: Path,
-    off_main: OffMainProcess,
+    off_main: OffMainThread,
     metadata_queue: asyncio.Queue[tuple[str, Path]],
     *,
     scan_contents: bool,
@@ -285,7 +285,7 @@ def _node_id_for(path: Path) -> str | None:
 
 
 async def _flush_pending_moves(
-    pending_from: dict[int, tuple[Path, bool]], off_main: OffMainProcess
+    pending_from: dict[int, tuple[Path, bool]], off_main: OffMainThread
 ) -> None:
     for cookie, (stale_path, stale_is_dir) in list(pending_from.items()):
         del pending_from[cookie]
@@ -313,7 +313,7 @@ async def _events_with_move_timeout(source, pending_from, stale_timeout=1.0):
 
 async def run_watcher(
     watch_paths: list[str],
-    off_main: OffMainProcess,
+    off_main: OffMainThread,
     metadata_queue: asyncio.Queue[tuple[str, Path]],
     *,
     exclude: tuple[str, ...] = (),

@@ -1,6 +1,6 @@
 import asyncio
 from collections.abc import AsyncGenerator, Generator
-from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import AsyncExitStack, asynccontextmanager, contextmanager
 from logging import getLogger
 from pathlib import Path
@@ -9,7 +9,7 @@ from aiohttp import web
 
 from ._db import (
     SUPER_ROOT_ID,
-    OffMainProcess,
+    OffMainThread,
     bulk_delete_nodes,
     bulk_emit_changes,
     bulk_upsert_nodes,
@@ -36,7 +36,7 @@ _L = getLogger(__name__)
 
 
 async def _scan_directory(
-    off_main: OffMainProcess,
+    off_main: OffMainThread,
     watch_root: Path,
     watch_root_id: str,
     metadata_queue: asyncio.Queue[tuple[str, Path]],
@@ -166,15 +166,13 @@ async def _scan_directory(
 
 async def _metadata_worker(
     metadata_queue: asyncio.Queue[tuple[str, Path]],
-    off_main: OffMainProcess,
-    pool: ProcessPoolExecutor,
+    off_main: OffMainThread,
 ) -> None:
-    loop = asyncio.get_running_loop()
     while True:
         node_id, path = await metadata_queue.get()
         _L.debug("metadata dequeue: %s", path)
         try:
-            meta = await loop.run_in_executor(pool, compute_file_metadata, path)
+            meta = await off_main.run(compute_file_metadata, path)
             await off_main(
                 update_node_metadata,
                 node_id,
@@ -195,27 +193,9 @@ async def _metadata_worker(
             _L.exception("metadata failed for %s", path)
 
 
-def _worker_init():
-    from signal import SIG_IGN, SIGINT, signal
-
-    signal(SIGINT, SIG_IGN)
-
-
 @contextmanager
-def _managed_db_pool() -> Generator[ThreadPoolExecutor, None, None]:
-    """Thread pool for DB operations — threads share the process so WAL
-    coordination works correctly and survives unclean shutdowns."""
-    pool = ThreadPoolExecutor(max_workers=1)
-    try:
-        yield pool
-    finally:
-        pool.shutdown(wait=True, cancel_futures=True)
-
-
-@contextmanager
-def _managed_compute_pool() -> Generator[ProcessPoolExecutor, None, None]:
-    """Process pool for CPU-intensive metadata computation only."""
-    pool = ProcessPoolExecutor(initializer=_worker_init)
+def _managed_pool() -> Generator[ThreadPoolExecutor, None, None]:
+    pool = ThreadPoolExecutor()
     try:
         yield pool
     finally:
@@ -224,30 +204,26 @@ def _managed_compute_pool() -> Generator[ProcessPoolExecutor, None, None]:
 
 async def _background_tasks(
     metadata_queue: asyncio.Queue[tuple[str, Path]],
-    off_main: OffMainProcess,
-    compute_pool: ProcessPoolExecutor,
+    off_main: OffMainThread,
     watches: list[str],
     exclude: tuple[str, ...] = (),
 ) -> None:
     from ._watcher import run_watcher
 
     async with asyncio.TaskGroup() as tg:
-        tg.create_task(_metadata_worker(metadata_queue, off_main, compute_pool))
+        tg.create_task(_metadata_worker(metadata_queue, off_main))
         tg.create_task(run_watcher(watches, off_main, metadata_queue, exclude=exclude))
 
 
 @asynccontextmanager
 async def _run_background(
     metadata_queue: asyncio.Queue[tuple[str, Path]],
-    off_main: OffMainProcess,
-    compute_pool: ProcessPoolExecutor,
+    off_main: OffMainThread,
     watches: list[str],
     exclude: tuple[str, ...] = (),
 ) -> AsyncGenerator[None, None]:
     task = asyncio.create_task(
-        _background_tasks(
-            metadata_queue, off_main, compute_pool, watches, exclude=exclude
-        )
+        _background_tasks(metadata_queue, off_main, watches, exclude=exclude)
     )
     try:
         yield
@@ -261,10 +237,9 @@ async def _app_lifecycle(app: web.Application) -> AsyncGenerator[None, None]:
     dsn = config.database_url
 
     async with AsyncExitStack() as stack:
-        # 1. Create separate pools: threads for DB, processes for CPU work
-        db_pool = stack.enter_context(_managed_db_pool())
-        compute_pool = stack.enter_context(_managed_compute_pool())
-        off_main = OffMainProcess(dsn=dsn, pool=db_pool)
+        # 1. Single thread pool for both DB ops and metadata computation
+        pool = stack.enter_context(_managed_pool())
+        off_main = OffMainThread(dsn=dsn, pool=pool)
         app[APP_OFF_MAIN] = off_main
 
         # 2. Initialize DB — routed through db_pool so all subsequent ops
@@ -345,7 +320,6 @@ async def _app_lifecycle(app: web.Application) -> AsyncGenerator[None, None]:
             _run_background(
                 metadata_queue,
                 off_main,
-                compute_pool,
                 list(config.watches.values()),
                 config.exclude,
             )
