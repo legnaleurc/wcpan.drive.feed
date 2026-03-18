@@ -10,7 +10,6 @@ authors = [
 requires-python = ">=3.12,<4.0"
 dependencies = [
     "aiohttp>=3.13.0,<4.0.0",
-    "asyncinotify>=4.4.0,<5.0.0",
     "python-magic>=0.4.27,<0.5.0",
     "pymediainfo>=7.0.1,<8.0.0",
     "PyYAML>=6.0.1,<7.0.0",
@@ -22,6 +21,14 @@ classifiers = [
     "Operating System :: POSIX :: Linux",
     "Topic :: Software Development :: Libraries",
     "Typing :: Typed",
+]
+
+[project.optional-dependencies]
+inotify = [
+    "asyncinotify>=4.4.0,<5.0.0",
+]
+fanotify = [
+    "cffi>=2.0.0,<3.0.0",
 ]
 
 [project.scripts]
