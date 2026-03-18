@@ -4,6 +4,19 @@ from typing import Literal, TypedDict
 
 
 @dataclass(frozen=True, kw_only=True)
+class InotifyWatcherConfig:
+    backend: Literal["inotify"] = "inotify"
+
+
+@dataclass(frozen=True, kw_only=True)
+class FanotifyWatcherConfig:
+    backend: Literal["fanotify"] = "fanotify"
+
+
+type WatcherConfig = InotifyWatcherConfig | FanotifyWatcherConfig
+
+
+@dataclass(frozen=True, kw_only=True)
 class Config:
     host: str
     port: int
@@ -11,6 +24,7 @@ class Config:
     watches: dict[str, str]  # namespace -> path
     exclude: tuple[str, ...] = ()
     log_path: str | None = None
+    watcher: WatcherConfig
 
 
 @dataclass(frozen=True, kw_only=True)

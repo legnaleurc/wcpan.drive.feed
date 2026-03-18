@@ -314,8 +314,9 @@ async def _app_lifecycle(app: web.Application) -> AsyncGenerator[None, None]:
         app[APP_WATCH_ROOT_PATHS] = _build_watch_root_paths(config)
 
         # 8. Start background tasks under a single TaskGroup
-        from ._watcher import run_watcher
+        from ._watcher import make_watcher_backend
 
+        watcher_fn = make_watcher_backend(config.watcher)
         group = await stack.enter_async_context(asyncio.TaskGroup())
         await stack.enter_async_context(
             _background(group, _metadata_worker(metadata_queue, off_main))
@@ -323,7 +324,7 @@ async def _app_lifecycle(app: web.Application) -> AsyncGenerator[None, None]:
         await stack.enter_async_context(
             _background(
                 group,
-                run_watcher(
+                watcher_fn(
                     list(config.watches.values()),
                     off_main,
                     metadata_queue,

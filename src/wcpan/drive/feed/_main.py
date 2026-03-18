@@ -9,7 +9,7 @@ from aiohttp import web
 from wcpan.logging import ConfigBuilder
 
 from ._app import create_app
-from ._types import Config
+from ._types import Config, FanotifyWatcherConfig, InotifyWatcherConfig
 
 
 _L = logging.getLogger(__name__)
@@ -32,6 +32,22 @@ def main() -> None:
     with open(config_path) as f:
         raw = yaml.safe_load(f)
 
+    raw_watcher = raw.get("watcher")
+    if not raw_watcher:
+        print("Config error: 'watcher' is required", file=sys.stderr)
+        sys.exit(1)
+    match raw_watcher.get("backend"):
+        case "fanotify":
+            watcher = FanotifyWatcherConfig()
+        case "inotify":
+            watcher = InotifyWatcherConfig()
+        case _:
+            print(
+                "Config error: 'watcher.backend' must be 'inotify' or 'fanotify'",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
     config = Config(
         host=raw.get("host", "0.0.0.0"),
         port=int(raw.get("port", 8080)),
@@ -39,6 +55,7 @@ def main() -> None:
         watches=dict(raw.get("watches", {})),
         exclude=tuple(raw.get("exclude", [])),
         log_path=raw.get("log_path"),
+        watcher=watcher,
     )
 
     dictConfig(

@@ -1,13 +1,10 @@
 import asyncio
+from collections.abc import AsyncIterator
 from logging import getLogger
 from pathlib import Path
+from typing import Any
 
-from asyncinotify import Inotify, Mask, RecursiveInotify
-
-
-_L = getLogger(__name__)
-
-from ._db import (
+from .._db import (
     OffMainThread,
     delete_nodes_and_emit_changes,
     get_all_node_ids_under,
@@ -16,17 +13,15 @@ from ._db import (
     node_id_from_stat,
     upsert_node_and_emit_change,
 )
-from ._exclude import is_excluded
-from ._lib import stat_to_times
-from ._types import NodeRecord
+from .._exclude import is_excluded
+from .._lib import stat_to_times
+from .._types import NodeRecord
 
 
-# RecursiveInotify internally adds MOVED_FROM | MOVED_TO | CREATE | IGNORED
-# to every directory watch for management; we add our file-event flags on top.
-_MASK = Mask.CREATE | Mask.DELETE | Mask.CLOSE_WRITE | Mask.MOVED_FROM | Mask.MOVED_TO
+_L = getLogger(__name__)
 
 
-async def _get_parent_node_id(path: Path, off_main: OffMainThread) -> str | None:
+async def get_parent_node_id(path: Path, off_main: OffMainThread) -> str | None:
     try:
         st = path.parent.stat()
     except OSError:
@@ -36,10 +31,10 @@ async def _get_parent_node_id(path: Path, off_main: OffMainThread) -> str | None
     return parent_id if parent else None
 
 
-async def _on_file_stub(
+async def on_file_stub(
     path: Path, off_main: OffMainThread, exclude: tuple[str, ...] = ()
 ) -> None:
-    """Insert a stub node (hash='') on IN_CREATE for a file."""
+    """Insert a stub node (hash='') on CREATE for a file."""
     if is_excluded(path.name, exclude):
         return
     try:
@@ -49,7 +44,7 @@ async def _on_file_stub(
     ctime, mtime = stat_to_times(st)
     node_id = node_id_from_stat(st)
     _L.debug("create file stub: %s", path)
-    parent_id = await _get_parent_node_id(path, off_main)
+    parent_id = await get_parent_node_id(path, off_main)
     if parent_id is None:
         return
     node = NodeRecord(
@@ -71,13 +66,13 @@ async def _on_file_stub(
     await off_main(upsert_node_and_emit_change, node)
 
 
-async def _on_close_write(
+async def on_close_write(
     path: Path,
     off_main: OffMainThread,
     metadata_queue: asyncio.Queue[tuple[str, Path]],
     exclude: tuple[str, ...] = (),
 ) -> None:
-    """Update or insert file node on IN_CLOSE_WRITE, then queue for metadata."""
+    """Update or insert file node on CLOSE_WRITE, then queue for metadata."""
     if is_excluded(path.name, exclude):
         return
     try:
@@ -90,7 +85,7 @@ async def _on_close_write(
     existing = await off_main(get_node_by_id, node_id)
     if existing is None:
         # Missed the CREATE — insert stub now
-        await _on_file_stub(path, off_main, exclude)
+        await on_file_stub(path, off_main, exclude)
         existing = await off_main(get_node_by_id, node_id)
         if existing is None:
             return
@@ -114,15 +109,12 @@ async def _on_close_write(
     await metadata_queue.put((existing.node_id, path))
 
 
-async def _on_delete(
+async def on_delete(
     path: Path,
     is_dir: bool,
     off_main: OffMainThread,
 ) -> None:
-    """Emit remove for a deleted file or directory (recursively for dirs).
-
-    Watch removal is handled automatically by RecursiveInotify via IGNORED events.
-    """
+    """Emit remove for a deleted file or directory (recursively for dirs)."""
     _L.debug("delete: %s (is_dir=%s)", path, is_dir)
     try:
         parent_st = path.parent.stat()
@@ -140,7 +132,7 @@ async def _on_delete(
     await off_main(delete_nodes_and_emit_changes, node_ids)
 
 
-async def _on_move(
+async def on_move(
     src: Path,
     dst: Path,
     is_dir: bool,
@@ -149,7 +141,6 @@ async def _on_move(
 ) -> bool:
     """Update parent_id + name for a renamed/moved node (no re-hash needed).
 
-    Watch updates for directories are handled automatically by RecursiveInotify.
     Returns False if the source node was not in the DB (caller should treat dst
     as a newly-arrived file/directory instead).
     """
@@ -163,10 +154,8 @@ async def _on_move(
     node_id = node_id_from_stat(st)
     existing = await off_main(get_node_by_id, node_id)
     if existing is None:
-        # Source was never tracked (e.g. temp file that was excluded).
-        # Signal the caller to treat dst as a new arrival.
         return False
-    new_parent = await _get_parent_node_id(dst, off_main)
+    new_parent = await get_parent_node_id(dst, off_main)
     if new_parent is None:
         return True
     node = NodeRecord(
@@ -189,7 +178,7 @@ async def _on_move(
     return True
 
 
-async def _on_dir_created(
+async def on_dir_created(
     path: Path,
     off_main: OffMainThread,
     metadata_queue: asyncio.Queue[tuple[str, Path]],
@@ -199,7 +188,6 @@ async def _on_dir_created(
 ) -> None:
     """Insert a directory node into the DB.
 
-    RecursiveInotify already adds the inotify watch before yielding the event.
     scan_contents=True when the directory was moved in from outside the watched
     area and may already contain files that won't trigger further events.
     """
@@ -212,7 +200,7 @@ async def _on_dir_created(
     ctime, mtime = stat_to_times(st)
     node_id = node_id_from_stat(st)
     _L.debug("dir created: %s (scan_contents=%s)", path, scan_contents)
-    parent_id = await _get_parent_node_id(path, off_main)
+    parent_id = await get_parent_node_id(path, off_main)
     if parent_id is None:
         return
     node = NodeRecord(
@@ -237,7 +225,6 @@ async def _on_dir_created(
         return
 
     # Recursively insert DB records for pre-existing contents (moved-in dir).
-    # Watches are already in place from RecursiveInotify.
     stack = [(path, node_id)]
     while stack:
         cur_dir, cur_parent_id = stack.pop()
@@ -277,26 +264,19 @@ async def _on_dir_created(
                 await metadata_queue.put((eid, entry))
 
 
-def _node_id_for(path: Path) -> str | None:
-    try:
-        return node_id_from_stat(path.stat())
-    except OSError:
-        return None
-
-
-async def _flush_pending_moves(
+async def flush_pending_moves(
     pending_from: dict[int, tuple[Path, bool]], off_main: OffMainThread
 ) -> None:
     for cookie, (stale_path, stale_is_dir) in list(pending_from.items()):
         del pending_from[cookie]
         try:
-            await _on_delete(stale_path, stale_is_dir, off_main)
+            await on_delete(stale_path, stale_is_dir, off_main)
         except Exception:
             _L.exception("delete failed for stale move: %s", stale_path)
 
 
-async def _events_with_move_timeout(
-    source: Inotify,
+async def events_with_move_timeout(
+    source: AsyncIterator[Any],
     pending_from: dict[int, tuple[Path, bool]],
     stale_timeout: float = 1.0,
 ):
@@ -313,97 +293,3 @@ async def _events_with_move_timeout(
             yield None
         except StopAsyncIteration:
             return
-
-
-async def run_watcher(
-    watch_paths: list[str],
-    off_main: OffMainThread,
-    metadata_queue: asyncio.Queue[tuple[str, Path]],
-    *,
-    exclude: tuple[str, ...] = (),
-) -> None:
-    """Main watcher coroutine. Uses RecursiveInotify for automatic recursive watching."""
-    # pending MOVED_FROM: cookie → (src_path, is_dir)
-    pending_from: dict[int, tuple[Path, bool]] = {}
-
-    with RecursiveInotify() as inotify:
-        for watch_path_str in watch_paths:
-            inotify.add_recursive_watch(Path(watch_path_str).resolve(), _MASK)
-
-        async for event in _events_with_move_timeout(inotify, pending_from):
-            if event is None:
-                await _flush_pending_moves(pending_from, off_main)
-                continue
-
-            if event.path is None:
-                if Mask.Q_OVERFLOW in event.mask:
-                    _L.warning(
-                        "inotify queue overflow — some filesystem events may have been missed"
-                    )
-                continue
-            if Mask.IGNORED in event.mask:
-                continue
-
-            is_dir = Mask.ISDIR in event.mask
-            path = event.path
-
-            # Flush unmatched MOVED_FROM entries as deletes
-            if Mask.MOVED_TO not in event.mask:
-                await _flush_pending_moves(pending_from, off_main)
-
-            try:
-                _L.debug("event %s: %s", event.mask, path)
-                if Mask.MOVED_FROM in event.mask:
-                    pending_from[event.cookie] = (path, is_dir)
-
-                elif Mask.MOVED_TO in event.mask:
-                    # Assume new arrival unless _on_move confirms it was tracked.
-                    is_new_arrival = True
-                    if event.cookie in pending_from:
-                        src_path, _ = pending_from.pop(event.cookie)
-                        is_new_arrival = not await _on_move(
-                            src_path, path, is_dir, off_main, exclude
-                        )
-                        if is_new_arrival:
-                            _L.debug(
-                                "move source untracked, treating dst as new: %s", path
-                            )
-
-                    if is_new_arrival:
-                        # Moved in from outside watched area, or source was an
-                        # untracked temp file (e.g. excluded upload staging file).
-                        if is_dir:
-                            await _on_dir_created(
-                                path,
-                                off_main,
-                                metadata_queue,
-                                scan_contents=True,
-                                exclude=exclude,
-                            )
-                        else:
-                            await _on_file_stub(path, off_main, exclude)
-                            node_id = _node_id_for(path)
-                            if node_id is not None:
-                                await metadata_queue.put((node_id, path))
-
-                elif Mask.CREATE in event.mask:
-                    if is_dir:
-                        await _on_dir_created(
-                            path,
-                            off_main,
-                            metadata_queue,
-                            scan_contents=False,
-                            exclude=exclude,
-                        )
-                    else:
-                        # Stub only; metadata arrives on CLOSE_WRITE
-                        await _on_file_stub(path, off_main, exclude)
-
-                elif Mask.DELETE in event.mask:
-                    await _on_delete(path, is_dir, off_main)
-
-                elif Mask.CLOSE_WRITE in event.mask:
-                    await _on_close_write(path, off_main, metadata_queue, exclude)
-
-            except Exception:
-                _L.exception("event handler failed: %s %s", event.mask, path)

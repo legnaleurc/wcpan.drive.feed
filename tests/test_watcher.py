@@ -14,14 +14,14 @@ from wcpan.drive.feed._db import (
 )
 from wcpan.drive.feed._lib import is_removed_change
 from wcpan.drive.feed._types import NodeRecord
-from wcpan.drive.feed._watcher import (
-    _events_with_move_timeout,
-    _flush_pending_moves,
-    _on_close_write,
-    _on_delete,
-    _on_dir_created,
-    _on_file_stub,
-    _on_move,
+from wcpan.drive.feed._watcher._lib import (
+    events_with_move_timeout,
+    flush_pending_moves,
+    on_close_write,
+    on_delete,
+    on_dir_created,
+    on_file_stub,
+    on_move,
 )
 
 from ._lib import create_db_sandbox, create_fs_sandbox, node_id_from_change
@@ -90,7 +90,7 @@ class TestOnFileStub(unittest.IsolatedAsyncioTestCase):
             off_main, pool = _make_off_main(dsn)
 
             _insert_dir_node(dsn, tmp, SUPER_ROOT_ID)
-            await _on_file_stub(f, off_main)
+            await on_file_stub(f, off_main)
 
             node = get_node_by_id(dsn, node_id_from_stat(f.stat()))
             self.assertIsNotNone(node)
@@ -106,7 +106,7 @@ class TestOnFileStub(unittest.IsolatedAsyncioTestCase):
             off_main, pool = _make_off_main(dsn)
 
             _insert_dir_node(dsn, tmp, SUPER_ROOT_ID)
-            await _on_file_stub(f, off_main)
+            await on_file_stub(f, off_main)
 
             file_id = node_id_from_stat(f.stat())
             changes, _ = get_changes_since(dsn, 0)
@@ -117,7 +117,7 @@ class TestOnFileStub(unittest.IsolatedAsyncioTestCase):
     async def test_missing_file_is_ignored(self):
         with create_db_sandbox() as dsn, create_fs_sandbox() as tmp:
             off_main, pool = _make_off_main(dsn)
-            await _on_file_stub(tmp / "nonexistent.txt", off_main)
+            await on_file_stub(tmp / "nonexistent.txt", off_main)
             pool.shutdown(wait=False)
 
     async def test_parent_not_in_db_is_ignored(self):
@@ -128,7 +128,7 @@ class TestOnFileStub(unittest.IsolatedAsyncioTestCase):
             f.write_text("hello")
             # tmp is NOT in DB — only SUPER_ROOT is
             off_main, pool = _make_off_main(dsn)
-            await _on_file_stub(f, off_main)
+            await on_file_stub(f, off_main)
 
             node = get_node_by_id(dsn, node_id_from_stat(f.stat()))
             self.assertIsNone(node)
@@ -146,7 +146,7 @@ class TestOnCloseWrite(unittest.IsolatedAsyncioTestCase):
             f.write_text("v2")
             off_main, pool = _make_off_main(dsn)
             mq: asyncio.Queue[tuple[str, Path]] = asyncio.Queue()
-            await _on_close_write(f, off_main, mq)
+            await on_close_write(f, off_main, mq)
 
             node = get_node_by_id(dsn, file_id)
             assert node
@@ -166,7 +166,7 @@ class TestOnCloseWrite(unittest.IsolatedAsyncioTestCase):
 
             off_main, pool = _make_off_main(dsn)
             mq: asyncio.Queue[tuple[str, Path]] = asyncio.Queue()
-            await _on_close_write(f, off_main, mq)
+            await on_close_write(f, off_main, mq)
 
             node = get_node_by_id(dsn, node_id_from_stat(f.stat()))
             self.assertIsNotNone(node)
@@ -183,7 +183,7 @@ class TestOnDelete(unittest.IsolatedAsyncioTestCase):
             f.unlink()
 
             off_main, pool = _make_off_main(dsn)
-            await _on_delete(f, False, off_main)
+            await on_delete(f, False, off_main)
 
             changes, _ = get_changes_since(dsn, 0)
             removed = [
@@ -209,7 +209,7 @@ class TestOnDelete(unittest.IsolatedAsyncioTestCase):
             subdir.rmdir()
 
             off_main, pool = _make_off_main(dsn)
-            await _on_delete(subdir, True, off_main)
+            await on_delete(subdir, True, off_main)
 
             changes, _ = get_changes_since(dsn, 0)
             removed_ids = {c.node_id for c in changes if is_removed_change(c)}
@@ -230,7 +230,7 @@ class TestOnMove(unittest.IsolatedAsyncioTestCase):
             src.rename(dst)
 
             off_main, pool = _make_off_main(dsn)
-            await _on_move(src, dst, False, off_main)
+            await on_move(src, dst, False, off_main)
 
             node = get_node_by_id(dsn, file_id)
             assert node
@@ -249,7 +249,7 @@ class TestOnMove(unittest.IsolatedAsyncioTestCase):
             src.rename(dst)
 
             off_main, pool = _make_off_main(dsn)
-            await _on_move(src, dst, True, off_main)
+            await on_move(src, dst, True, off_main)
 
             node = get_node_by_id(dsn, dir_id)
             assert node
@@ -269,7 +269,7 @@ class TestOnMove(unittest.IsolatedAsyncioTestCase):
             src.rename(dst)
 
             off_main, pool = _make_off_main(dsn)
-            result = await _on_move(src, dst, False, off_main)
+            result = await on_move(src, dst, False, off_main)
 
             self.assertFalse(result)
             # dst should also not be in DB — caller is responsible for inserting it
@@ -291,7 +291,7 @@ class TestOnMove(unittest.IsolatedAsyncioTestCase):
             src.rename(dst)
 
             off_main, pool = _make_off_main(dsn)
-            await _on_move(src, dst, True, off_main)
+            await on_move(src, dst, True, off_main)
 
             changes, _ = get_changes_since(dsn, 0)
             node_ids = {node_id_from_change(c) for c in changes}
@@ -308,7 +308,7 @@ class TestOnDirCreated(unittest.IsolatedAsyncioTestCase):
 
             off_main, pool = _make_off_main(dsn)
             mq: asyncio.Queue[tuple[str, Path]] = asyncio.Queue()
-            await _on_dir_created(new_dir, off_main, mq, scan_contents=False)
+            await on_dir_created(new_dir, off_main, mq, scan_contents=False)
 
             node = get_node_by_id(dsn, node_id_from_stat(new_dir.stat()))
             self.assertIsNotNone(node)
@@ -324,7 +324,7 @@ class TestOnDirCreated(unittest.IsolatedAsyncioTestCase):
 
             off_main, pool = _make_off_main(dsn)
             mq: asyncio.Queue[tuple[str, Path]] = asyncio.Queue()
-            await _on_dir_created(new_dir, off_main, mq, scan_contents=False)
+            await on_dir_created(new_dir, off_main, mq, scan_contents=False)
 
             dir_id = node_id_from_stat(new_dir.stat())
             changes, _ = get_changes_since(dsn, 0)
@@ -342,7 +342,7 @@ class TestOnDirCreated(unittest.IsolatedAsyncioTestCase):
 
             off_main, pool = _make_off_main(dsn)
             mq: asyncio.Queue[tuple[str, Path]] = asyncio.Queue()
-            await _on_dir_created(moved_in, off_main, mq, scan_contents=True)
+            await on_dir_created(moved_in, off_main, mq, scan_contents=True)
 
             self.assertFalse(mq.empty())
             pool.shutdown(wait=False)
@@ -388,7 +388,7 @@ class TestExcludeOnEvents(unittest.IsolatedAsyncioTestCase):
             _insert_dir_node(dsn, tmp, SUPER_ROOT_ID)
 
             off_main, pool = _make_off_main(dsn)
-            await _on_file_stub(f, off_main)
+            await on_file_stub(f, off_main)
 
             node = get_node_by_id(dsn, node_id_from_stat(f.stat()))
             self.assertIsNone(node)
@@ -402,7 +402,7 @@ class TestExcludeOnEvents(unittest.IsolatedAsyncioTestCase):
 
             off_main, pool = _make_off_main(dsn)
             mq: asyncio.Queue[tuple[str, Path]] = asyncio.Queue()
-            await _on_dir_created(ea_dir, off_main, mq, scan_contents=False)
+            await on_dir_created(ea_dir, off_main, mq, scan_contents=False)
 
             node = get_node_by_id(dsn, node_id_from_stat(ea_dir.stat()))
             self.assertIsNone(node)
@@ -416,7 +416,7 @@ class TestExcludeOnEvents(unittest.IsolatedAsyncioTestCase):
 
             off_main, pool = _make_off_main(dsn)
             mq: asyncio.Queue[tuple[str, Path]] = asyncio.Queue()
-            await _on_close_write(f, off_main, mq)
+            await on_close_write(f, off_main, mq)
 
             node = get_node_by_id(dsn, node_id_from_stat(f.stat()))
             self.assertIsNone(node)
@@ -433,7 +433,7 @@ class TestExcludeOnEvents(unittest.IsolatedAsyncioTestCase):
             src.rename(dst)
 
             off_main, pool = _make_off_main(dsn)
-            await _on_move(src, dst, True, off_main)
+            await on_move(src, dst, True, off_main)
 
             node = get_node_by_id(dsn, dir_id)
             self.assertIsNotNone(node)
@@ -453,7 +453,7 @@ class TestFlushPendingMoves(unittest.IsolatedAsyncioTestCase):
 
             pending_from = {1: (f, False)}
             off_main, pool = _make_off_main(dsn)
-            await _flush_pending_moves(pending_from, off_main)
+            await flush_pending_moves(pending_from, off_main)
 
             self.assertEqual(pending_from, {})
             changes, _ = get_changes_since(dsn, 0)
@@ -467,7 +467,7 @@ class TestFlushPendingMoves(unittest.IsolatedAsyncioTestCase):
         with create_db_sandbox() as dsn, create_fs_sandbox() as tmp:
             off_main, pool = _make_off_main(dsn)
             pending_from = {}
-            await _flush_pending_moves(pending_from, off_main)
+            await flush_pending_moves(pending_from, off_main)
             self.assertEqual(pending_from, {})
             pool.shutdown(wait=False)
 
@@ -481,7 +481,7 @@ class TestEventsWithMoveTimeout(unittest.IsolatedAsyncioTestCase):
 
         pending_from = {}
         result = []
-        async for event in _events_with_move_timeout(
+        async for event in events_with_move_timeout(
             source(), pending_from, stale_timeout=0.05
         ):
             result.append(event)
@@ -496,7 +496,7 @@ class TestEventsWithMoveTimeout(unittest.IsolatedAsyncioTestCase):
 
         pending_from = {1: (Path("/some/path"), False)}
         result = []
-        async for event in _events_with_move_timeout(
+        async for event in events_with_move_timeout(
             never_yields(), pending_from, stale_timeout=0.05
         ):
             result.append(event)
@@ -520,7 +520,7 @@ class TestExcludeUnderExcludedFolder(unittest.IsolatedAsyncioTestCase):
             _insert_dir_node(dsn, tmp, SUPER_ROOT_ID)
 
             off_main, pool = _make_off_main(dsn)
-            await _on_file_stub(thumb, off_main)
+            await on_file_stub(thumb, off_main)
 
             node = get_node_by_id(dsn, node_id_from_stat(thumb.stat()))
             self.assertIsNone(
@@ -539,7 +539,7 @@ class TestExcludeUnderExcludedFolder(unittest.IsolatedAsyncioTestCase):
 
             off_main, pool = _make_off_main(dsn)
             mq: asyncio.Queue[tuple[str, Path]] = asyncio.Queue()
-            await _on_dir_created(sub, off_main, mq, scan_contents=False)
+            await on_dir_created(sub, off_main, mq, scan_contents=False)
 
             node = get_node_by_id(dsn, node_id_from_stat(sub.stat()))
             self.assertIsNone(
@@ -558,7 +558,7 @@ class TestExcludeUnderExcludedFolder(unittest.IsolatedAsyncioTestCase):
 
             off_main, pool = _make_off_main(dsn)
             mq: asyncio.Queue[tuple[str, Path]] = asyncio.Queue()
-            await _on_close_write(thumb, off_main, mq)
+            await on_close_write(thumb, off_main, mq)
 
             node = get_node_by_id(dsn, node_id_from_stat(thumb.stat()))
             self.assertIsNone(
