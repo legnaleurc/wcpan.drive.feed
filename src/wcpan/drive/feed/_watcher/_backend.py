@@ -4,6 +4,7 @@ from typing import Protocol
 
 from .._db import OffMainThread
 from .._types import FanotifyWatcherConfig, InotifyWatcherConfig, WatcherConfig
+from ._lib import WriteQueue
 
 
 class WatcherBackend(Protocol):
@@ -12,6 +13,7 @@ class WatcherBackend(Protocol):
         watch_paths: list[str],
         off_main: OffMainThread,
         metadata_queue: asyncio.Queue[tuple[str, Path]],
+        write_queue: WriteQueue,
         *,
         exclude: tuple[str, ...] = (),
     ) -> None: ...

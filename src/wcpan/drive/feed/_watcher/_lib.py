@@ -1,5 +1,5 @@
 import asyncio
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable, Coroutine
 from logging import getLogger
 from pathlib import Path
 from typing import Any
@@ -20,6 +20,8 @@ from .._types import NodeRecord
 
 _L = getLogger(__name__)
 
+WriteQueue = asyncio.Queue[Callable[[], Coroutine[None, None, None]]]
+
 
 async def get_parent_node_id(path: Path, off_main: OffMainThread) -> str | None:
     try:
@@ -32,9 +34,12 @@ async def get_parent_node_id(path: Path, off_main: OffMainThread) -> str | None:
 
 
 async def on_file_stub(
-    path: Path, off_main: OffMainThread, exclude: tuple[str, ...] = ()
+    path: Path,
+    off_main: OffMainThread,
+    metadata_queue: asyncio.Queue[tuple[NodeRecord, Path]],
+    exclude: tuple[str, ...] = (),
 ) -> None:
-    """Insert a stub node (hash='') on CREATE for a file."""
+    """Queue a pending file node for metadata computation — no DB write until metadata is ready."""
     if is_excluded(path.name, exclude):
         return
     try:
@@ -63,56 +68,71 @@ async def on_file_stub(
         height=0,
         ms_duration=0,
     )
-    await off_main(upsert_node_and_emit_change, node)
+    await metadata_queue.put((node, path))
 
 
 async def on_close_write(
     path: Path,
     off_main: OffMainThread,
-    metadata_queue: asyncio.Queue[tuple[str, Path]],
+    metadata_queue: asyncio.Queue[tuple[NodeRecord, Path]],
     exclude: tuple[str, ...] = (),
 ) -> None:
-    """Update or insert file node on CLOSE_WRITE, then queue for metadata."""
+    """Queue file node for metadata computation on CLOSE_WRITE — no DB write until metadata is ready."""
     if is_excluded(path.name, exclude):
         return
     try:
         st = path.stat()
     except OSError:
         return
-    _, mtime = stat_to_times(st)
+    ctime, mtime = stat_to_times(st)
     node_id = node_id_from_stat(st)
     _L.debug("close write: %s", path)
     existing = await off_main(get_node_by_id, node_id)
     if existing is None:
-        # Missed the CREATE — insert stub now
-        await on_file_stub(path, off_main, exclude)
-        existing = await off_main(get_node_by_id, node_id)
-        if existing is None:
+        parent_id = await get_parent_node_id(path, off_main)
+        if parent_id is None:
             return
-    node = NodeRecord(
-        node_id=existing.node_id,
-        parent_id=existing.parent_id,
-        name=existing.name,
-        is_directory=False,
-        ctime=existing.ctime,
-        mtime=mtime,
-        mime_type=existing.mime_type,
-        hash="",
-        size=st.st_size,
-        is_image=existing.is_image,
-        is_video=existing.is_video,
-        width=existing.width,
-        height=existing.height,
-        ms_duration=existing.ms_duration,
-    )
-    await off_main(upsert_node_and_emit_change, node)
-    await metadata_queue.put((existing.node_id, path))
+        node = NodeRecord(
+            node_id=node_id,
+            parent_id=parent_id,
+            name=path.name,
+            is_directory=False,
+            ctime=ctime,
+            mtime=mtime,
+            mime_type="",
+            hash="",
+            size=st.st_size,
+            is_image=False,
+            is_video=False,
+            width=0,
+            height=0,
+            ms_duration=0,
+        )
+    else:
+        node = NodeRecord(
+            node_id=existing.node_id,
+            parent_id=existing.parent_id,
+            name=existing.name,
+            is_directory=False,
+            ctime=existing.ctime,
+            mtime=mtime,
+            mime_type=existing.mime_type,
+            hash="",
+            size=st.st_size,
+            is_image=existing.is_image,
+            is_video=existing.is_video,
+            width=existing.width,
+            height=existing.height,
+            ms_duration=existing.ms_duration,
+        )
+    await metadata_queue.put((node, path))
 
 
 async def on_delete(
     path: Path,
     is_dir: bool,
     off_main: OffMainThread,
+    write_queue: WriteQueue,
 ) -> None:
     """Emit remove for a deleted file or directory (recursively for dirs)."""
     _L.debug("delete: %s (is_dir=%s)", path, is_dir)
@@ -129,7 +149,11 @@ async def on_delete(
     node_ids = [node.node_id]
     if is_dir:
         node_ids += await off_main(get_all_node_ids_under, node.node_id)
-    await off_main(delete_nodes_and_emit_changes, node_ids)
+
+    async def _w(node_ids=node_ids) -> None:
+        await off_main(delete_nodes_and_emit_changes, node_ids)
+
+    await write_queue.put(_w)
 
 
 async def on_move(
@@ -137,6 +161,7 @@ async def on_move(
     dst: Path,
     is_dir: bool,
     off_main: OffMainThread,
+    write_queue: WriteQueue,
     exclude: tuple[str, ...] = (),
 ) -> bool:
     """Update parent_id + name for a renamed/moved node (no re-hash needed).
@@ -174,14 +199,19 @@ async def on_move(
         height=existing.height,
         ms_duration=existing.ms_duration,
     )
-    await off_main(upsert_node_and_emit_change, node)
+
+    async def _w(node=node) -> None:
+        await off_main(upsert_node_and_emit_change, node)
+
+    await write_queue.put(_w)
     return True
 
 
 async def on_dir_created(
     path: Path,
     off_main: OffMainThread,
-    metadata_queue: asyncio.Queue[tuple[str, Path]],
+    metadata_queue: asyncio.Queue[tuple[NodeRecord, Path]],
+    write_queue: WriteQueue,
     *,
     scan_contents: bool,
     exclude: tuple[str, ...] = (),
@@ -219,7 +249,11 @@ async def on_dir_created(
         height=0,
         ms_duration=0,
     )
-    await off_main(upsert_node_and_emit_change, node)
+
+    async def _w(node=node) -> None:
+        await off_main(upsert_node_and_emit_change, node)
+
+    await write_queue.put(_w)
 
     if not scan_contents:
         return
@@ -257,20 +291,26 @@ async def on_dir_created(
                 height=0,
                 ms_duration=0,
             )
-            await off_main(upsert_node_and_emit_change, enode)
             if entry.is_dir():
+
+                async def _w(n=enode) -> None:
+                    await off_main(upsert_node_and_emit_change, n)
+
+                await write_queue.put(_w)
                 stack.append((entry, eid))
             else:
-                await metadata_queue.put((eid, entry))
+                await metadata_queue.put((enode, entry))
 
 
 async def flush_pending_moves(
-    pending_from: dict[int, tuple[Path, bool]], off_main: OffMainThread
+    pending_from: dict[int, tuple[Path, bool]],
+    off_main: OffMainThread,
+    write_queue: WriteQueue,
 ) -> None:
     for cookie, (stale_path, stale_is_dir) in list(pending_from.items()):
         del pending_from[cookie]
         try:
-            await on_delete(stale_path, stale_is_dir, off_main)
+            await on_delete(stale_path, stale_is_dir, off_main, write_queue)
         except Exception:
             _L.exception("delete failed for stale move: %s", stale_path)
 

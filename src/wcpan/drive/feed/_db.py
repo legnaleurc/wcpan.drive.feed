@@ -377,57 +377,6 @@ def _now_us() -> int:
     return int(datetime.now(tz=timezone.utc).timestamp() * 1_000_000)
 
 
-def update_node_metadata(
-    dsn: str,
-    node_id: str,
-    *,
-    mime_type: str,
-    hash: str,
-    size: int,
-    is_image: bool,
-    is_video: bool,
-    width: int,
-    height: int,
-    ms_duration: int,
-) -> None:
-    with read_write(dsn) as cursor:
-        cursor.execute(
-            """
-            UPDATE nodes SET
-                mime_type   = ?,
-                hash        = ?,
-                size        = ?,
-                is_image    = ?,
-                is_video    = ?,
-                width       = ?,
-                height      = ?,
-                ms_duration = ?
-            WHERE node_id = ?
-            """,
-            (
-                mime_type,
-                hash,
-                size,
-                1 if is_image else 0,
-                1 if is_video else 0,
-                width,
-                height,
-                ms_duration,
-                node_id,
-            ),
-        )
-
-
-def update_node_mtime_size(
-    dsn: str, node_id: str, *, mtime: datetime, size: int
-) -> None:
-    with read_write(dsn) as cursor:
-        cursor.execute(
-            "UPDATE nodes SET mtime = ?, size = ?, hash = '' WHERE node_id = ?",
-            (_dt_to_us(mtime), size, node_id),
-        )
-
-
 def get_schema_version(dsn: str) -> int:
     with read_only(dsn) as cursor:
         cursor.execute("PRAGMA user_version")
