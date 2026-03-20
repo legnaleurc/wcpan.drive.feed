@@ -1,5 +1,8 @@
+import asyncio
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 from typing import Literal, TypedDict
 
 
@@ -92,6 +95,10 @@ class NodeParams(TypedDict):
     width: int
     height: int
     ms_duration: int
+
+
+type WriteQueue = asyncio.Queue[Callable[[], None]]
+type MetadataQueue = asyncio.Queue[tuple[NodeRecord, Path]]
 
 
 @dataclass(frozen=True, kw_only=True)

@@ -1,7 +1,9 @@
 import asyncio
-from collections.abc import AsyncGenerator, Coroutine, Generator
+import os
+from collections.abc import AsyncGenerator, Awaitable, Callable, Coroutine, Generator
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import AsyncExitStack, asynccontextmanager, contextmanager
+from functools import partial
 from logging import getLogger
 from pathlib import Path
 
@@ -9,44 +11,45 @@ from aiohttp import web
 
 from ._db import (
     SUPER_ROOT_ID,
-    OffMainThread,
-    bulk_delete_nodes,
-    bulk_emit_changes,
-    bulk_upsert_nodes,
-    checkpoint,
-    delete_nodes_and_emit_changes,
-    ensure_schema,
-    get_all_node_ids_by_parent,
-    get_all_node_ids_under,
-    get_all_nodes,
+    Storage,
     node_id_from_stat,
-    upsert_node_and_emit_change,
-    upsert_super_root,
 )
 from ._exclude import is_excluded
 from ._handlers import handle_changes, handle_cursor, handle_node_path, handle_root
-from ._keys import APP_CONFIG, APP_KEY_READY, APP_OFF_MAIN, APP_WATCH_ROOT_PATHS
-from ._lib import stat_to_times
+from ._keys import (
+    APP_CONFIG,
+    APP_KEY_READY,
+    APP_OFF_MAIN,
+    APP_STORAGE,
+    APP_WATCH_ROOT_PATHS,
+)
+from ._lib import OffMainThread, stat_to_times
 from ._metadata import compute_file_metadata
-from ._types import Config, NodeRecord
-from ._watcher._lib import WriteQueue
+from ._types import Config, MetadataQueue, NodeRecord, WriteQueue
+
+
+type _Handler = Callable[[web.Request], Awaitable[web.StreamResponse]]
 
 
 _L = getLogger(__name__)
 
-_NUM_META_WORKERS = 2
+_NUM_META_WORKERS = os.process_cpu_count() or 1
+_META_QUEUE_SIZE = _NUM_META_WORKERS * 2
+_WRITE_QUEUE_SIZE = _NUM_META_WORKERS * 2
+_WAL_CHECKPOINT_INTERVAL = 300.0  # seconds
 
 
 async def _scan_directory(
+    storage: Storage,
     off_main: OffMainThread,
     watch_root: Path,
     watch_root_id: str,
     write_queue: WriteQueue,
-    metadata_queue: asyncio.Queue[tuple[NodeRecord, Path]],
+    metadata_queue: MetadataQueue,
     exclude: tuple[str, ...] = (),
 ) -> None:
     # 1. Bulk load all existing nodes; build parent→children index for deletion detection.
-    existing_by_id = await off_main(get_all_nodes)
+    existing_by_id = await off_main(storage.get_all_nodes)
     children_by_parent: dict[str, list[str]] = {}
     for node_id, node in existing_by_id.items():
         if node.parent_id is not None:
@@ -155,17 +158,17 @@ async def _scan_directory(
 
     # 2. Flush as a single write_queue task so the upsert always precedes any
     #    metadata update writes (write_queue is FIFO, single consumer).
-    async def _flush(
+    def _flush(
         pending_upserts=pending_upserts,
         pending_deletes=pending_deletes,
         pending_dir_and_delete_changes=pending_dir_and_delete_changes,
     ) -> None:
         if pending_upserts:
-            await off_main(bulk_upsert_nodes, pending_upserts)
+            storage.bulk_upsert_nodes(pending_upserts)
         if pending_deletes:
-            await off_main(bulk_delete_nodes, pending_deletes)
+            storage.bulk_delete_nodes(pending_deletes)
         if pending_dir_and_delete_changes:
-            await off_main(bulk_emit_changes, pending_dir_and_delete_changes)
+            storage.bulk_emit_changes(pending_dir_and_delete_changes)
 
     await write_queue.put(_flush)
 
@@ -175,11 +178,17 @@ async def _scan_directory(
         await metadata_queue.put(item)
 
 
-async def _write_worker(write_queue: WriteQueue) -> None:
+async def _checkpoint_worker(write_queue: WriteQueue, storage: Storage) -> None:
+    while True:
+        await asyncio.sleep(_WAL_CHECKPOINT_INTERVAL)
+        await write_queue.put(storage.checkpoint)
+
+
+async def _write_worker(write_queue: WriteQueue, off_main: OffMainThread) -> None:
     while True:
         task = await write_queue.get()
         try:
-            await task()
+            await off_main(task)
         except Exception:
             _L.exception("write task failed")
             raise
@@ -188,15 +197,16 @@ async def _write_worker(write_queue: WriteQueue) -> None:
 
 
 async def _metadata_worker(
-    metadata_queue: asyncio.Queue[tuple[NodeRecord, Path]],
+    metadata_queue: MetadataQueue,
     write_queue: WriteQueue,
+    storage: Storage,
     off_main: OffMainThread,
 ) -> None:
     while True:
         pending_node, path = await metadata_queue.get()
         _L.debug("metadata dequeue: %s", path)
         try:
-            meta = await off_main.run(compute_file_metadata, path)
+            meta = await off_main(compute_file_metadata, path)
             node = NodeRecord(
                 node_id=pending_node.node_id,
                 parent_id=pending_node.parent_id,
@@ -214,10 +224,7 @@ async def _metadata_worker(
                 ms_duration=meta.ms_duration,
             )
 
-            async def _w(node=node) -> None:
-                await off_main(upsert_node_and_emit_change, node)
-
-            await write_queue.put(_w)
+            await write_queue.put(partial(storage.upsert_node_and_emit_change, node))
             _L.debug(
                 "metadata done: %s mime=%s hash=%s", path, meta.mime_type, meta.hash
             )
@@ -248,6 +255,7 @@ async def _background[T](
 
 
 async def _reconcile_stale_roots(
+    storage: Storage,
     off_main: OffMainThread,
     config: Config,
     write_queue: WriteQueue,
@@ -258,23 +266,20 @@ async def _reconcile_stale_roots(
             config_root_ids.add(node_id_from_stat(Path(p).resolve().stat()))
         except OSError:
             pass
-    db_root_ids = set(await off_main(get_all_node_ids_by_parent, SUPER_ROOT_ID))
+    db_root_ids = set(await off_main(storage.get_all_node_ids_by_parent, SUPER_ROOT_ID))
     for stale_id in db_root_ids - config_root_ids:
         _L.info("removing stale watch root: %s", stale_id)
-        child_ids = await off_main(get_all_node_ids_under, stale_id)
+        child_ids = await off_main(storage.get_all_node_ids_under, stale_id)
         all_ids = child_ids + [stale_id]
-
-        async def _flush(all_ids=all_ids) -> None:
-            await off_main(delete_nodes_and_emit_changes, all_ids)
-
-        await write_queue.put(_flush)
+        await write_queue.put(partial(storage.delete_nodes_and_emit_changes, all_ids))
 
 
 async def _scan_all_watch_paths(
+    storage: Storage,
     off_main: OffMainThread,
     config: Config,
     write_queue: WriteQueue,
-    metadata_queue: asyncio.Queue[tuple[NodeRecord, Path]],
+    metadata_queue: MetadataQueue,
 ) -> None:
     for namespace, watch_path_str in config.watches.items():
         watch_root = Path(watch_path_str).resolve()
@@ -301,12 +306,10 @@ async def _scan_all_watch_paths(
             ms_duration=0,
         )
 
-        async def _w(node=root_node) -> None:
-            await off_main(upsert_node_and_emit_change, node)
-
-        await write_queue.put(_w)
+        await write_queue.put(partial(storage.upsert_node_and_emit_change, root_node))
         _L.info("scanning watch root: %s -> %s", namespace, watch_root)
         await _scan_directory(
+            storage,
             off_main,
             watch_root,
             watch_root_id,
@@ -329,15 +332,15 @@ def _build_watch_root_paths(config: Config) -> dict[str, Path]:
 
 
 async def _startup(
+    storage: Storage,
     off_main: OffMainThread,
     config: Config,
     write_queue: WriteQueue,
-    metadata_queue: asyncio.Queue[tuple[NodeRecord, Path]],
+    metadata_queue: MetadataQueue,
     ready_event: asyncio.Event,
 ) -> None:
-    await _reconcile_stale_roots(off_main, config, write_queue)
-    await _scan_all_watch_paths(off_main, config, write_queue, metadata_queue)
-    await off_main(checkpoint)
+    await _reconcile_stale_roots(storage, off_main, config, write_queue)
+    await _scan_all_watch_paths(storage, off_main, config, write_queue, metadata_queue)
     _L.info("startup scan complete; waiting for queues to drain")
     await metadata_queue.join()
     await write_queue.join()
@@ -347,7 +350,7 @@ async def _startup(
 
 @web.middleware
 async def _ready_middleware(
-    request: web.Request, handler: web.RequestHandler
+    request: web.Request, handler: _Handler
 ) -> web.StreamResponse:
     if not request.app[APP_KEY_READY].is_set():
         raise web.HTTPServiceUnavailable(reason="Server starting")
@@ -361,19 +364,21 @@ async def _app_lifecycle(app: web.Application) -> AsyncGenerator[None, None]:
     async with AsyncExitStack() as stack:
         # 1. Single thread pool for both DB ops and metadata computation
         pool = stack.enter_context(_managed_pool())
-        off_main = OffMainThread(dsn=dsn, pool=pool)
+        off_main = OffMainThread(pool)
+        storage = Storage(dsn)
         app[APP_OFF_MAIN] = off_main
+        app[APP_STORAGE] = storage
 
         # 2. Initialize DB
         _L.info("initializing database: %s", dsn)
-        await off_main(ensure_schema)
-        await off_main(upsert_super_root)
+        await off_main(storage.ensure_schema)
+        await off_main(storage.upsert_super_root)
 
         # 3. Queues and ready event
         metadata_queue: asyncio.Queue[tuple[NodeRecord, Path]] = asyncio.Queue(
-            maxsize=_NUM_META_WORKERS * 2
+            maxsize=_META_QUEUE_SIZE
         )
-        write_queue: WriteQueue = asyncio.Queue(maxsize=_NUM_META_WORKERS * 2)
+        write_queue: WriteQueue = asyncio.Queue(maxsize=_WRITE_QUEUE_SIZE)
         ready_event = asyncio.Event()
         app[APP_KEY_READY] = ready_event
         app[APP_WATCH_ROOT_PATHS] = _build_watch_root_paths(config)
@@ -386,13 +391,21 @@ async def _app_lifecycle(app: web.Application) -> AsyncGenerator[None, None]:
         group = await stack.enter_async_context(asyncio.TaskGroup())
 
         # Single write consumer — serialises all DB writes
-        await stack.enter_async_context(_background(group, _write_worker(write_queue)))
+        await stack.enter_async_context(
+            _background(group, _write_worker(write_queue, off_main))
+        )
+
+        # Periodic WAL checkpoint — keeps WAL bounded during normal operation
+        await stack.enter_async_context(
+            _background(group, _checkpoint_worker(write_queue, storage))
+        )
 
         # N metadata workers — each computes file metadata and enqueues its own write
         for _ in range(_NUM_META_WORKERS):
             await stack.enter_async_context(
                 _background(
-                    group, _metadata_worker(metadata_queue, write_queue, off_main)
+                    group,
+                    _metadata_worker(metadata_queue, write_queue, storage, off_main),
                 )
             )
 
@@ -402,6 +415,7 @@ async def _app_lifecycle(app: web.Application) -> AsyncGenerator[None, None]:
                 group,
                 watcher_fn(
                     list(config.watches.values()),
+                    storage,
                     off_main,
                     metadata_queue,
                     write_queue,
@@ -414,7 +428,9 @@ async def _app_lifecycle(app: web.Application) -> AsyncGenerator[None, None]:
         await stack.enter_async_context(
             _background(
                 group,
-                _startup(off_main, config, write_queue, metadata_queue, ready_event),
+                _startup(
+                    storage, off_main, config, write_queue, metadata_queue, ready_event
+                ),
             )
         )
 

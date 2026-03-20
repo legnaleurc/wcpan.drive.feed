@@ -1,11 +1,8 @@
 import os
 import uuid
-from collections.abc import Callable
-from concurrent.futures import Executor
 from contextlib import closing, contextmanager
 from datetime import datetime, timezone
 from sqlite3 import Row, connect
-from typing import Concatenate
 
 from ._types import MergedChange, NodeParams, NodeRecord, RemovedChange, UpdatedChange
 
@@ -52,29 +49,72 @@ def node_id_from_stat(st: os.stat_result) -> str:
     return str(uuid.uuid5(uuid.NAMESPACE_URL, f"{st.st_dev}:{st.st_ino}"))
 
 
-class OffMainThread:
-    def __init__(self, *, dsn: str, pool: Executor) -> None:
+class Storage:
+    def __init__(self, dsn: str) -> None:
         self._dsn = dsn
-        self._pool = pool
 
-    async def __call__[**A, R](
-        self, fn: Callable[Concatenate[str, A], R], *args: A.args, **kwargs: A.kwargs
-    ) -> R:
-        from asyncio import get_running_loop
-        from functools import partial
+    def ensure_schema(self) -> None:
+        ensure_schema(self._dsn)
 
-        bound = partial(fn, self._dsn, *args, **kwargs)
-        loop = get_running_loop()
-        return await loop.run_in_executor(self._pool, bound)
+    def checkpoint(self) -> None:
+        checkpoint(self._dsn)
 
-    async def run[**A, R](
-        self, fn: Callable[A, R], *args: A.args, **kwargs: A.kwargs
-    ) -> R:
-        from asyncio import get_running_loop
-        from functools import partial
+    def upsert_super_root(self) -> None:
+        upsert_super_root(self._dsn)
 
-        loop = get_running_loop()
-        return await loop.run_in_executor(self._pool, partial(fn, *args, **kwargs))
+    def upsert_node(self, node: NodeRecord) -> None:
+        upsert_node(self._dsn, node)
+
+    def upsert_node_and_emit_change(self, node: NodeRecord) -> None:
+        upsert_node_and_emit_change(self._dsn, node)
+
+    def delete_node(self, node_id: str) -> None:
+        delete_node(self._dsn, node_id)
+
+    def delete_nodes_and_emit_changes(self, node_ids: list[str]) -> None:
+        delete_nodes_and_emit_changes(self._dsn, node_ids)
+
+    def get_node_by_id(self, node_id: str) -> NodeRecord | None:
+        return get_node_by_id(self._dsn, node_id)
+
+    def get_node_by_parent_name(self, parent_id: str, name: str) -> NodeRecord | None:
+        return get_node_by_parent_name(self._dsn, parent_id, name)
+
+    def get_children(self, parent_id: str) -> list[NodeRecord]:
+        return get_children(self._dsn, parent_id)
+
+    def emit_change(self, node_id: str, *, is_removed: bool) -> int:
+        return emit_change(self._dsn, node_id, is_removed=is_removed)
+
+    def get_cursor(self) -> int:
+        return get_cursor(self._dsn)
+
+    def get_changes_since(self, cursor: int) -> tuple[list[MergedChange], int]:
+        return get_changes_since(self._dsn, cursor)
+
+    def get_all_node_ids_under(self, parent_id: str) -> list[str]:
+        return get_all_node_ids_under(self._dsn, parent_id)
+
+    def get_all_node_ids_by_parent(self, parent_id: str) -> list[str]:
+        return get_all_node_ids_by_parent(self._dsn, parent_id)
+
+    def get_all_nodes(self) -> dict[str, NodeRecord]:
+        return get_all_nodes(self._dsn)
+
+    def get_ancestor_chain(self, node_id: str) -> list[NodeRecord] | None:
+        return get_ancestor_chain(self._dsn, node_id)
+
+    def get_schema_version(self) -> int:
+        return get_schema_version(self._dsn)
+
+    def bulk_upsert_nodes(self, items: list[NodeRecord]) -> None:
+        bulk_upsert_nodes(self._dsn, items)
+
+    def bulk_emit_changes(self, changes: list[tuple[str, bool]]) -> None:
+        bulk_emit_changes(self._dsn, changes)
+
+    def bulk_delete_nodes(self, node_ids: list[str]) -> None:
+        bulk_delete_nodes(self._dsn, node_ids)
 
 
 @contextmanager

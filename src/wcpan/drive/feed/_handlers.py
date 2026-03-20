@@ -2,14 +2,8 @@ from pathlib import Path
 
 from aiohttp import web
 
-from ._db import (
-    SUPER_ROOT_ID,
-    get_ancestor_chain,
-    get_changes_since,
-    get_cursor,
-    get_node_by_id,
-)
-from ._keys import APP_OFF_MAIN, APP_WATCH_ROOT_PATHS
+from ._db import SUPER_ROOT_ID
+from ._keys import APP_OFF_MAIN, APP_STORAGE, APP_WATCH_ROOT_PATHS
 from ._lib import dispatch_change
 from ._types import NodeDict, NodeRecord
 
@@ -34,12 +28,14 @@ def _node_to_dict(node: NodeRecord) -> NodeDict:
 
 
 async def handle_cursor(request: web.Request) -> web.Response:
+    storage = request.app[APP_STORAGE]
     off_main = request.app[APP_OFF_MAIN]
-    cursor = await off_main(get_cursor)
+    cursor = await off_main(storage.get_cursor)
     return web.json_response({"cursor": cursor})
 
 
 async def handle_changes(request: web.Request) -> web.Response:
+    storage = request.app[APP_STORAGE]
     off_main = request.app[APP_OFF_MAIN]
 
     cursor_str = request.rel_url.query.get("cursor", "0")
@@ -48,7 +44,7 @@ async def handle_changes(request: web.Request) -> web.Response:
     except ValueError:
         raise web.HTTPBadRequest(reason="invalid cursor")
 
-    changes, new_cursor = await off_main(get_changes_since, cursor)
+    changes, new_cursor = await off_main(storage.get_changes_since, cursor)
 
     result: list[dict[str, object]] = []
     for change in changes:
@@ -67,10 +63,11 @@ async def handle_changes(request: web.Request) -> web.Response:
 
 async def handle_node_path(request: web.Request) -> web.Response:
     node_id = request.match_info["id"]
+    storage = request.app[APP_STORAGE]
     off_main = request.app[APP_OFF_MAIN]
     watch_root_paths: dict[str, Path] = request.app[APP_WATCH_ROOT_PATHS]
 
-    chain = await off_main(get_ancestor_chain, node_id)
+    chain = await off_main(storage.get_ancestor_chain, node_id)
     if chain is None:
         raise web.HTTPNotFound()
     if not chain:  # super-root itself
@@ -88,8 +85,9 @@ async def handle_node_path(request: web.Request) -> web.Response:
 
 
 async def handle_root(request: web.Request) -> web.Response:
+    storage = request.app[APP_STORAGE]
     off_main = request.app[APP_OFF_MAIN]
-    node = await off_main(get_node_by_id, SUPER_ROOT_ID)
+    node = await off_main(storage.get_node_by_id, SUPER_ROOT_ID)
     if node is None:
         raise web.HTTPInternalServerError(reason="super-root not found")
     return web.json_response(_node_to_dict(node))

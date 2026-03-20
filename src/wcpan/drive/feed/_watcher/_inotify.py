@@ -4,10 +4,10 @@ from pathlib import Path
 
 from asyncinotify import Mask, RecursiveInotify
 
-from .._db import OffMainThread
-from .._types import NodeRecord
+from .._db import Storage
+from .._lib import OffMainThread
+from .._types import NodeRecord, WriteQueue
 from ._lib import (
-    WriteQueue,
     events_with_move_timeout,
     flush_pending_moves,
     on_close_write,
@@ -27,6 +27,7 @@ _MASK = Mask.CREATE | Mask.DELETE | Mask.CLOSE_WRITE | Mask.MOVED_FROM | Mask.MO
 
 async def run_watcher(
     watch_paths: list[str],
+    storage: Storage,
     off_main: OffMainThread,
     metadata_queue: asyncio.Queue[tuple[NodeRecord, Path]],
     write_queue: WriteQueue,
@@ -43,7 +44,7 @@ async def run_watcher(
 
         async for event in events_with_move_timeout(inotify, pending_from):
             if event is None:
-                await flush_pending_moves(pending_from, off_main, write_queue)
+                await flush_pending_moves(pending_from, storage, off_main, write_queue)
                 continue
 
             if event.path is None:
@@ -60,7 +61,7 @@ async def run_watcher(
 
             # Flush unmatched MOVED_FROM entries as deletes
             if Mask.MOVED_TO not in event.mask:
-                await flush_pending_moves(pending_from, off_main, write_queue)
+                await flush_pending_moves(pending_from, storage, off_main, write_queue)
 
             try:
                 _L.debug("event %s: %s", event.mask, path)
@@ -73,7 +74,13 @@ async def run_watcher(
                     if event.cookie in pending_from:
                         src_path, _ = pending_from.pop(event.cookie)
                         is_new_arrival = not await on_move(
-                            src_path, path, is_dir, off_main, write_queue, exclude
+                            src_path,
+                            path,
+                            is_dir,
+                            storage,
+                            off_main,
+                            write_queue,
+                            exclude,
                         )
                         if is_new_arrival:
                             _L.debug(
@@ -86,6 +93,7 @@ async def run_watcher(
                         if is_dir:
                             await on_dir_created(
                                 path,
+                                storage,
                                 off_main,
                                 metadata_queue,
                                 write_queue,
@@ -93,12 +101,15 @@ async def run_watcher(
                                 exclude=exclude,
                             )
                         else:
-                            await on_file_stub(path, off_main, metadata_queue, exclude)
+                            await on_file_stub(
+                                path, storage, off_main, metadata_queue, exclude
+                            )
 
                 elif Mask.CREATE in event.mask:
                     if is_dir:
                         await on_dir_created(
                             path,
+                            storage,
                             off_main,
                             metadata_queue,
                             write_queue,
@@ -107,13 +118,17 @@ async def run_watcher(
                         )
                     else:
                         # Stub only; metadata arrives on CLOSE_WRITE
-                        await on_file_stub(path, off_main, metadata_queue, exclude)
+                        await on_file_stub(
+                            path, storage, off_main, metadata_queue, exclude
+                        )
 
                 elif Mask.DELETE in event.mask:
-                    await on_delete(path, is_dir, off_main, write_queue)
+                    await on_delete(path, is_dir, storage, off_main, write_queue)
 
                 elif Mask.CLOSE_WRITE in event.mask:
-                    await on_close_write(path, off_main, metadata_queue, exclude)
+                    await on_close_write(
+                        path, storage, off_main, metadata_queue, exclude
+                    )
 
             except Exception:
                 _L.exception("event handler failed: %s %s", event.mask, path)

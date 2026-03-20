@@ -39,6 +39,8 @@ def _make_app_with_mocks(
     changes: list[MergedChange] | None = None,
     root_node: NodeRecord | None = None,
 ):
+    from unittest.mock import MagicMock
+
     from aiohttp import web
 
     from wcpan.drive.feed._handlers import handle_changes, handle_cursor, handle_root
@@ -48,26 +50,23 @@ def _make_app_with_mocks(
     if root_node is None:
         root_node = _make_node(SUPER_ROOT_ID)
 
+    storage = MagicMock()
+    storage.get_cursor.return_value = cursor_val
+    storage.get_changes_since.side_effect = lambda c: (changes, max(cursor_val, c))
+    storage.get_node_by_id.return_value = root_node
+
     off_main = AsyncMock()
 
-    async def mock_off_main(fn, *args, **kwargs):
-        from wcpan.drive.feed._db import get_changes_since, get_cursor, get_node_by_id
-
-        if fn is get_cursor:
-            return cursor_val
-        if fn is get_changes_since:
-            c = args[0] if args else 0
-            return (changes, max(cursor_val, c))
-        if fn is get_node_by_id:
-            return root_node
-        return None
+    async def mock_off_main(fn, *args):
+        return fn(*args)
 
     off_main.side_effect = mock_off_main
 
-    from wcpan.drive.feed._keys import APP_OFF_MAIN
+    from wcpan.drive.feed._keys import APP_OFF_MAIN, APP_STORAGE
 
     app = web.Application()
     app[APP_OFF_MAIN] = off_main
+    app[APP_STORAGE] = storage
     app.router.add_get("/api/v1/cursor", handle_cursor)
     app.router.add_get("/api/v1/changes", handle_changes)
     app.router.add_get("/api/v1/root", handle_root)

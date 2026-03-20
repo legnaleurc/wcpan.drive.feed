@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 
 from wcpan.drive.feed._db import (
     SUPER_ROOT_ID,
-    OffMainThread,
+    Storage,
     bulk_delete_nodes,
     bulk_emit_changes,
     bulk_upsert_nodes,
@@ -18,7 +18,7 @@ from wcpan.drive.feed._db import (
     upsert_node,
     upsert_node_and_emit_change,
 )
-from wcpan.drive.feed._lib import is_updated_change
+from wcpan.drive.feed._lib import OffMainThread, is_updated_change
 from wcpan.drive.feed._types import NodeRecord
 
 from ._lib import create_db_sandbox, node_id_from_change
@@ -264,10 +264,14 @@ class TestConcurrentReadWrite(unittest.IsolatedAsyncioTestCase):
         with create_db_sandbox() as dsn:
             nodes = [_make_file_node(i) for i in range(50)]
             pool = ThreadPoolExecutor(max_workers=4)
+            storage = Storage(dsn)
             try:
-                off_main = OffMainThread(dsn=dsn, pool=pool)
+                off_main = OffMainThread(pool)
                 await asyncio.gather(
-                    *(off_main(upsert_node_and_emit_change, node) for node in nodes)
+                    *(
+                        off_main(storage.upsert_node_and_emit_change, node)
+                        for node in nodes
+                    )
                 )
             finally:
                 pool.shutdown(wait=True, cancel_futures=True)
@@ -281,10 +285,14 @@ class TestConcurrentReadWrite(unittest.IsolatedAsyncioTestCase):
         with create_db_sandbox() as dsn:
             nodes = [_make_file_node(i) for i in range(50)]
             pool = ThreadPoolExecutor(max_workers=4)
+            storage = Storage(dsn)
             try:
-                off_main = OffMainThread(dsn=dsn, pool=pool)
-                writes = [off_main(upsert_node_and_emit_change, node) for node in nodes]
-                reads = [off_main(get_all_nodes) for _ in range(10)]
+                off_main = OffMainThread(pool)
+                writes = [
+                    off_main(storage.upsert_node_and_emit_change, node)
+                    for node in nodes
+                ]
+                reads = [off_main(storage.get_all_nodes) for _ in range(10)]
                 tasks = writes + reads
                 await asyncio.gather(*tasks)
             finally:

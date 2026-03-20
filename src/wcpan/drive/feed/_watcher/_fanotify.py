@@ -8,10 +8,10 @@ from pathlib import Path
 
 import cffi
 
-from .._db import OffMainThread
-from .._types import NodeRecord
+from .._db import Storage
+from .._lib import OffMainThread
+from .._types import NodeRecord, WriteQueue
 from ._lib import (
-    WriteQueue,
     on_close_write,
     on_delete,
     on_dir_created,
@@ -200,6 +200,7 @@ class FanotifyWatcher:
     async def __call__(
         self,
         watch_paths: list[str],
+        storage: Storage,
         off_main: OffMainThread,
         metadata_queue: asyncio.Queue[tuple[NodeRecord, Path]],
         write_queue: WriteQueue,
@@ -255,6 +256,7 @@ class FanotifyWatcher:
                                 path,
                                 is_dir,
                                 pending_from,
+                                storage,
                                 off_main,
                                 metadata_queue,
                                 write_queue,
@@ -273,6 +275,7 @@ async def _dispatch(
     path: Path,
     is_dir: bool,
     pending_from: dict[int, tuple[Path, bool]],
+    storage: Storage,
     off_main: OffMainThread,
     metadata_queue: asyncio.Queue[tuple[NodeRecord, Path]],
     write_queue: WriteQueue,
@@ -289,13 +292,14 @@ async def _dispatch(
         if 0 in pending_from:
             src_path, src_is_dir = pending_from.pop(0)
             tracked = await on_move(
-                src_path, path, is_dir, off_main, write_queue, exclude
+                src_path, path, is_dir, storage, off_main, write_queue, exclude
             )
             if not tracked:
                 # Source was untracked — treat destination as new arrival
                 if is_dir:
                     await on_dir_created(
                         path,
+                        storage,
                         off_main,
                         metadata_queue,
                         write_queue,
@@ -303,12 +307,13 @@ async def _dispatch(
                         exclude=exclude,
                     )
                 else:
-                    await on_file_stub(path, off_main, metadata_queue, exclude)
+                    await on_file_stub(path, storage, off_main, metadata_queue, exclude)
         else:
             # No matching MOVED_FROM — treat as new arrival
             if is_dir:
                 await on_dir_created(
                     path,
+                    storage,
                     off_main,
                     metadata_queue,
                     write_queue,
@@ -316,12 +321,13 @@ async def _dispatch(
                     exclude=exclude,
                 )
             else:
-                await on_file_stub(path, off_main, metadata_queue, exclude)
+                await on_file_stub(path, storage, off_main, metadata_queue, exclude)
 
     elif mask & FAN_CREATE:
         if is_dir:
             await on_dir_created(
                 path,
+                storage,
                 off_main,
                 metadata_queue,
                 write_queue,
@@ -329,10 +335,10 @@ async def _dispatch(
                 exclude=exclude,
             )
         else:
-            await on_file_stub(path, off_main, metadata_queue, exclude)
+            await on_file_stub(path, storage, off_main, metadata_queue, exclude)
 
     elif mask & FAN_DELETE:
-        await on_delete(path, is_dir, off_main, write_queue)
+        await on_delete(path, is_dir, storage, off_main, write_queue)
 
     elif mask & FAN_CLOSE_WRITE:
-        await on_close_write(path, off_main, metadata_queue, exclude)
+        await on_close_write(path, storage, off_main, metadata_queue, exclude)

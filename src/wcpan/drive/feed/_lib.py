@@ -1,9 +1,24 @@
 from collections.abc import Callable
+from concurrent.futures import Executor
 from datetime import datetime, timezone
+from functools import partial
 from os import stat_result
 from typing import TypeGuard
 
 from ._types import MergedChange, NodeRecord, RemovedChange, UpdatedChange
+
+
+class OffMainThread:
+    def __init__(self, pool: Executor) -> None:
+        self._pool = pool
+
+    async def __call__[**A, R](
+        self, fn: Callable[A, R], *args: A.args, **kwargs: A.kwargs
+    ) -> R:
+        from asyncio import get_running_loop
+
+        loop = get_running_loop()
+        return await loop.run_in_executor(self._pool, partial(fn, *args, **kwargs))
 
 
 def is_removed_change(change: MergedChange) -> TypeGuard[RemovedChange]:

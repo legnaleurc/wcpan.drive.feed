@@ -13,9 +13,8 @@ from wcpan.drive.feed._db import (
     upsert_node,
 )
 from wcpan.drive.feed._lib import is_removed_change
-from wcpan.drive.feed._types import NodeRecord
+from wcpan.drive.feed._types import MetadataQueue, NodeRecord, WriteQueue
 from wcpan.drive.feed._watcher._lib import (
-    WriteQueue,
     events_with_move_timeout,
     flush_pending_moves,
     on_close_write,
@@ -28,13 +27,19 @@ from wcpan.drive.feed._watcher._lib import (
 from ._lib import create_db_sandbox, create_fs_sandbox, node_id_from_change
 
 
-def _make_off_main(dsn: str):
+def _make_off_main():
     from concurrent.futures import ThreadPoolExecutor
 
-    from wcpan.drive.feed._db import OffMainThread
+    from wcpan.drive.feed._lib import OffMainThread
 
     pool = ThreadPoolExecutor(max_workers=1)
-    return OffMainThread(dsn=dsn, pool=pool), pool
+    return OffMainThread(pool), pool
+
+
+def _make_storage(dsn: str):
+    from wcpan.drive.feed._db import Storage
+
+    return Storage(dsn)
 
 
 def _make_write_queue() -> WriteQueue:
@@ -45,7 +50,7 @@ async def _drain_write_queue(wq: WriteQueue) -> None:
     """Run all queued write tasks synchronously (for test assertions)."""
     while not wq.empty():
         task = wq.get_nowait()
-        await task()
+        task()
         wq.task_done()
 
 
@@ -101,11 +106,12 @@ class TestOnFileStub(unittest.IsolatedAsyncioTestCase):
         with create_db_sandbox() as dsn, create_fs_sandbox() as tmp:
             f = tmp / "hello.txt"
             f.write_text("hello")
-            off_main, pool = _make_off_main(dsn)
-            mq: asyncio.Queue[tuple] = asyncio.Queue()
+            off_main, pool = _make_off_main()
+            storage = _make_storage(dsn)
+            mq: MetadataQueue = asyncio.Queue()
 
             _insert_dir_node(dsn, tmp, SUPER_ROOT_ID)
-            await on_file_stub(f, off_main, mq)
+            await on_file_stub(f, storage, off_main, mq)
 
             # File stays out of DB until metadata worker runs
             node = get_node_by_id(dsn, node_id_from_stat(f.stat()))
@@ -119,11 +125,12 @@ class TestOnFileStub(unittest.IsolatedAsyncioTestCase):
         with create_db_sandbox() as dsn, create_fs_sandbox() as tmp:
             f = tmp / "hello.txt"
             f.write_text("hello")
-            off_main, pool = _make_off_main(dsn)
-            mq: asyncio.Queue[tuple] = asyncio.Queue()
+            off_main, pool = _make_off_main()
+            storage = _make_storage(dsn)
+            mq: MetadataQueue = asyncio.Queue()
 
             _insert_dir_node(dsn, tmp, SUPER_ROOT_ID)
-            await on_file_stub(f, off_main, mq)
+            await on_file_stub(f, storage, off_main, mq)
 
             changes, _ = get_changes_since(dsn, 0)
             node_ids = {node_id_from_change(c) for c in changes}
@@ -132,9 +139,10 @@ class TestOnFileStub(unittest.IsolatedAsyncioTestCase):
 
     async def test_missing_file_is_ignored(self):
         with create_db_sandbox() as dsn, create_fs_sandbox() as tmp:
-            off_main, pool = _make_off_main(dsn)
-            mq: asyncio.Queue[tuple] = asyncio.Queue()
-            await on_file_stub(tmp / "nonexistent.txt", off_main, mq)
+            off_main, pool = _make_off_main()
+            storage = _make_storage(dsn)
+            mq: MetadataQueue = asyncio.Queue()
+            await on_file_stub(tmp / "nonexistent.txt", storage, off_main, mq)
             pool.shutdown(wait=False)
 
     async def test_parent_not_in_db_is_ignored(self):
@@ -144,9 +152,10 @@ class TestOnFileStub(unittest.IsolatedAsyncioTestCase):
             f = sub / "hello.txt"
             f.write_text("hello")
             # tmp is NOT in DB — only SUPER_ROOT is
-            off_main, pool = _make_off_main(dsn)
-            mq: asyncio.Queue[tuple] = asyncio.Queue()
-            await on_file_stub(f, off_main, mq)
+            off_main, pool = _make_off_main()
+            storage = _make_storage(dsn)
+            mq: MetadataQueue = asyncio.Queue()
+            await on_file_stub(f, storage, off_main, mq)
 
             self.assertTrue(mq.empty())
             pool.shutdown(wait=False)
@@ -161,9 +170,10 @@ class TestOnCloseWrite(unittest.IsolatedAsyncioTestCase):
             file_id = _insert_file_node(dsn, f, parent_id)
 
             f.write_text("v2")
-            off_main, pool = _make_off_main(dsn)
-            mq: asyncio.Queue[tuple] = asyncio.Queue()
-            await on_close_write(f, off_main, mq)
+            off_main, pool = _make_off_main()
+            storage = _make_storage(dsn)
+            mq: MetadataQueue = asyncio.Queue()
+            await on_close_write(f, storage, off_main, mq)
 
             # Node is queued for metadata — no DB write yet
             self.assertFalse(mq.empty())
@@ -179,9 +189,10 @@ class TestOnCloseWrite(unittest.IsolatedAsyncioTestCase):
             f.write_text("content")
             _insert_dir_node(dsn, tmp, SUPER_ROOT_ID)
 
-            off_main, pool = _make_off_main(dsn)
-            mq: asyncio.Queue[tuple] = asyncio.Queue()
-            await on_close_write(f, off_main, mq)
+            off_main, pool = _make_off_main()
+            storage = _make_storage(dsn)
+            mq: MetadataQueue = asyncio.Queue()
+            await on_close_write(f, storage, off_main, mq)
 
             # Node is queued for metadata — no DB write yet
             self.assertFalse(mq.empty())
@@ -197,9 +208,10 @@ class TestOnDelete(unittest.IsolatedAsyncioTestCase):
             file_id = _insert_file_node(dsn, f, parent_id)
             f.unlink()
 
-            off_main, pool = _make_off_main(dsn)
+            off_main, pool = _make_off_main()
+            storage = _make_storage(dsn)
             wq = _make_write_queue()
-            await on_delete(f, False, off_main, wq)
+            await on_delete(f, False, storage, off_main, wq)
             await _drain_write_queue(wq)
 
             changes, _ = get_changes_since(dsn, 0)
@@ -225,9 +237,10 @@ class TestOnDelete(unittest.IsolatedAsyncioTestCase):
             f.unlink()
             subdir.rmdir()
 
-            off_main, pool = _make_off_main(dsn)
+            off_main, pool = _make_off_main()
+            storage = _make_storage(dsn)
             wq = _make_write_queue()
-            await on_delete(subdir, True, off_main, wq)
+            await on_delete(subdir, True, storage, off_main, wq)
             await _drain_write_queue(wq)
 
             changes, _ = get_changes_since(dsn, 0)
@@ -248,9 +261,10 @@ class TestOnMove(unittest.IsolatedAsyncioTestCase):
             dst = tmp / "renamed.txt"
             src.rename(dst)
 
-            off_main, pool = _make_off_main(dsn)
+            off_main, pool = _make_off_main()
+            storage = _make_storage(dsn)
             wq = _make_write_queue()
-            await on_move(src, dst, False, off_main, wq)
+            await on_move(src, dst, False, storage, off_main, wq)
             await _drain_write_queue(wq)
 
             node = get_node_by_id(dsn, file_id)
@@ -269,9 +283,10 @@ class TestOnMove(unittest.IsolatedAsyncioTestCase):
             dst = tmp / "dstdir"
             src.rename(dst)
 
-            off_main, pool = _make_off_main(dsn)
+            off_main, pool = _make_off_main()
+            storage = _make_storage(dsn)
             wq = _make_write_queue()
-            await on_move(src, dst, True, off_main, wq)
+            await on_move(src, dst, True, storage, off_main, wq)
             await _drain_write_queue(wq)
 
             node = get_node_by_id(dsn, dir_id)
@@ -291,9 +306,10 @@ class TestOnMove(unittest.IsolatedAsyncioTestCase):
             dst = tmp / "final.txt"
             src.rename(dst)
 
-            off_main, pool = _make_off_main(dsn)
+            off_main, pool = _make_off_main()
+            storage = _make_storage(dsn)
             wq = _make_write_queue()
-            result = await on_move(src, dst, False, off_main, wq)
+            result = await on_move(src, dst, False, storage, off_main, wq)
 
             self.assertFalse(result)
             # dst should also not be in DB — caller is responsible for inserting it
@@ -314,9 +330,10 @@ class TestOnMove(unittest.IsolatedAsyncioTestCase):
             dst = outside / "dstdir"
             src.rename(dst)
 
-            off_main, pool = _make_off_main(dsn)
+            off_main, pool = _make_off_main()
+            storage = _make_storage(dsn)
             wq = _make_write_queue()
-            await on_move(src, dst, True, off_main, wq)
+            await on_move(src, dst, True, storage, off_main, wq)
             await _drain_write_queue(wq)
 
             changes, _ = get_changes_since(dsn, 0)
@@ -332,10 +349,13 @@ class TestOnDirCreated(unittest.IsolatedAsyncioTestCase):
             new_dir.mkdir()
             _insert_dir_node(dsn, tmp, SUPER_ROOT_ID)
 
-            off_main, pool = _make_off_main(dsn)
-            mq: asyncio.Queue[tuple] = asyncio.Queue()
+            off_main, pool = _make_off_main()
+            storage = _make_storage(dsn)
+            mq: MetadataQueue = asyncio.Queue()
             wq = _make_write_queue()
-            await on_dir_created(new_dir, off_main, mq, wq, scan_contents=False)
+            await on_dir_created(
+                new_dir, storage, off_main, mq, wq, scan_contents=False
+            )
             await _drain_write_queue(wq)
 
             node = get_node_by_id(dsn, node_id_from_stat(new_dir.stat()))
@@ -350,10 +370,13 @@ class TestOnDirCreated(unittest.IsolatedAsyncioTestCase):
             new_dir.mkdir()
             _insert_dir_node(dsn, tmp, SUPER_ROOT_ID)
 
-            off_main, pool = _make_off_main(dsn)
-            mq: asyncio.Queue[tuple] = asyncio.Queue()
+            off_main, pool = _make_off_main()
+            storage = _make_storage(dsn)
+            mq: MetadataQueue = asyncio.Queue()
             wq = _make_write_queue()
-            await on_dir_created(new_dir, off_main, mq, wq, scan_contents=False)
+            await on_dir_created(
+                new_dir, storage, off_main, mq, wq, scan_contents=False
+            )
             await _drain_write_queue(wq)
 
             dir_id = node_id_from_stat(new_dir.stat())
@@ -370,10 +393,13 @@ class TestOnDirCreated(unittest.IsolatedAsyncioTestCase):
 
             _insert_dir_node(dsn, tmp, SUPER_ROOT_ID)
 
-            off_main, pool = _make_off_main(dsn)
-            mq: asyncio.Queue[tuple] = asyncio.Queue()
+            off_main, pool = _make_off_main()
+            storage = _make_storage(dsn)
+            mq: MetadataQueue = asyncio.Queue()
             wq = _make_write_queue()
-            await on_dir_created(moved_in, off_main, mq, wq, scan_contents=True)
+            await on_dir_created(
+                moved_in, storage, off_main, mq, wq, scan_contents=True
+            )
             await _drain_write_queue(wq)
 
             self.assertFalse(mq.empty())
@@ -387,10 +413,11 @@ class TestExcludeOnStartup(unittest.IsolatedAsyncioTestCase):
             ea_dir.mkdir()
 
             root_id = node_id_from_stat(tmp.stat())
-            off_main, pool = _make_off_main(dsn)
-            mq: asyncio.Queue[tuple] = asyncio.Queue()
+            off_main, pool = _make_off_main()
+            storage = _make_storage(dsn)
+            mq: MetadataQueue = asyncio.Queue()
             wq = _make_write_queue()
-            await _scan_directory(off_main, tmp, root_id, wq, mq)
+            await _scan_directory(storage, off_main, tmp, root_id, wq, mq)
             await _drain_write_queue(wq)
 
             node = get_node_by_id(dsn, node_id_from_stat(ea_dir.stat()))
@@ -405,10 +432,11 @@ class TestExcludeOnStartup(unittest.IsolatedAsyncioTestCase):
             thumb.write_bytes(b"")
 
             root_id = node_id_from_stat(tmp.stat())
-            off_main, pool = _make_off_main(dsn)
-            mq: asyncio.Queue[tuple] = asyncio.Queue()
+            off_main, pool = _make_off_main()
+            storage = _make_storage(dsn)
+            mq: MetadataQueue = asyncio.Queue()
             wq = _make_write_queue()
-            await _scan_directory(off_main, tmp, root_id, wq, mq)
+            await _scan_directory(storage, off_main, tmp, root_id, wq, mq)
             await _drain_write_queue(wq)
 
             node = get_node_by_id(dsn, node_id_from_stat(thumb.stat()))
@@ -423,9 +451,10 @@ class TestExcludeOnEvents(unittest.IsolatedAsyncioTestCase):
             f.write_bytes(b"")
             _insert_dir_node(dsn, tmp, SUPER_ROOT_ID)
 
-            off_main, pool = _make_off_main(dsn)
-            mq: asyncio.Queue[tuple] = asyncio.Queue()
-            await on_file_stub(f, off_main, mq)
+            off_main, pool = _make_off_main()
+            storage = _make_storage(dsn)
+            mq: MetadataQueue = asyncio.Queue()
+            await on_file_stub(f, storage, off_main, mq)
 
             self.assertTrue(mq.empty())
             pool.shutdown(wait=False)
@@ -436,10 +465,11 @@ class TestExcludeOnEvents(unittest.IsolatedAsyncioTestCase):
             ea_dir.mkdir()
             _insert_dir_node(dsn, tmp, SUPER_ROOT_ID)
 
-            off_main, pool = _make_off_main(dsn)
-            mq: asyncio.Queue[tuple] = asyncio.Queue()
+            off_main, pool = _make_off_main()
+            storage = _make_storage(dsn)
+            mq: MetadataQueue = asyncio.Queue()
             wq = _make_write_queue()
-            await on_dir_created(ea_dir, off_main, mq, wq, scan_contents=False)
+            await on_dir_created(ea_dir, storage, off_main, mq, wq, scan_contents=False)
             await _drain_write_queue(wq)
 
             node = get_node_by_id(dsn, node_id_from_stat(ea_dir.stat()))
@@ -452,9 +482,10 @@ class TestExcludeOnEvents(unittest.IsolatedAsyncioTestCase):
             f.write_text("[autorun]")
             _insert_dir_node(dsn, tmp, SUPER_ROOT_ID)
 
-            off_main, pool = _make_off_main(dsn)
-            mq: asyncio.Queue[tuple] = asyncio.Queue()
-            await on_close_write(f, off_main, mq)
+            off_main, pool = _make_off_main()
+            storage = _make_storage(dsn)
+            mq: MetadataQueue = asyncio.Queue()
+            await on_close_write(f, storage, off_main, mq)
 
             self.assertTrue(mq.empty())
             pool.shutdown(wait=False)
@@ -469,9 +500,10 @@ class TestExcludeOnEvents(unittest.IsolatedAsyncioTestCase):
             dst = tmp / "@eaDir"
             src.rename(dst)
 
-            off_main, pool = _make_off_main(dsn)
+            off_main, pool = _make_off_main()
+            storage = _make_storage(dsn)
             wq = _make_write_queue()
-            await on_move(src, dst, True, off_main, wq)
+            await on_move(src, dst, True, storage, off_main, wq)
             await _drain_write_queue(wq)
 
             node = get_node_by_id(dsn, dir_id)
@@ -491,9 +523,10 @@ class TestFlushPendingMoves(unittest.IsolatedAsyncioTestCase):
             f.unlink()
 
             pending_from = {1: (f, False)}
-            off_main, pool = _make_off_main(dsn)
+            off_main, pool = _make_off_main()
+            storage = _make_storage(dsn)
             wq = _make_write_queue()
-            await flush_pending_moves(pending_from, off_main, wq)
+            await flush_pending_moves(pending_from, storage, off_main, wq)
             await _drain_write_queue(wq)
 
             self.assertEqual(pending_from, {})
@@ -505,11 +538,12 @@ class TestFlushPendingMoves(unittest.IsolatedAsyncioTestCase):
             pool.shutdown(wait=False)
 
     async def test_empty_pending_is_noop(self):
-        with create_db_sandbox() as dsn, create_fs_sandbox() as tmp:
-            off_main, pool = _make_off_main(dsn)
+        with create_db_sandbox() as dsn, create_fs_sandbox() as _:
+            off_main, pool = _make_off_main()
+            storage = _make_storage(dsn)
             wq = _make_write_queue()
-            pending_from = {}
-            await flush_pending_moves(pending_from, off_main, wq)
+            pending_from: dict[int, tuple[Path, bool]] = {}
+            await flush_pending_moves(pending_from, storage, off_main, wq)
             self.assertEqual(pending_from, {})
             pool.shutdown(wait=False)
 
@@ -521,8 +555,8 @@ class TestEventsWithMoveTimeout(unittest.IsolatedAsyncioTestCase):
         async def source():
             yield sentinel
 
-        pending_from = {}
-        result = []
+        pending_from: dict[int, tuple[Path, bool]] = {}
+        result: list[object] = []
         async for event in events_with_move_timeout(
             source(), pending_from, stale_timeout=0.05
         ):
@@ -537,7 +571,7 @@ class TestEventsWithMoveTimeout(unittest.IsolatedAsyncioTestCase):
             yield  # makes this an async generator
 
         pending_from = {1: (Path("/some/path"), False)}
-        result = []
+        result: list[object] = []
         async for event in events_with_move_timeout(
             never_yields(), pending_from, stale_timeout=0.05
         ):
@@ -561,9 +595,10 @@ class TestExcludeUnderExcludedFolder(unittest.IsolatedAsyncioTestCase):
             # @eaDir is on disk but NOT in DB; only tmp is in DB
             _insert_dir_node(dsn, tmp, SUPER_ROOT_ID)
 
-            off_main, pool = _make_off_main(dsn)
-            mq: asyncio.Queue[tuple] = asyncio.Queue()
-            await on_file_stub(thumb, off_main, mq)
+            off_main, pool = _make_off_main()
+            storage = _make_storage(dsn)
+            mq: MetadataQueue = asyncio.Queue()
+            await on_file_stub(thumb, storage, off_main, mq)
 
             # Parent not in DB → ignored
             self.assertTrue(mq.empty())
@@ -578,10 +613,11 @@ class TestExcludeUnderExcludedFolder(unittest.IsolatedAsyncioTestCase):
             # @eaDir is on disk but NOT in DB; only tmp is in DB
             _insert_dir_node(dsn, tmp, SUPER_ROOT_ID)
 
-            off_main, pool = _make_off_main(dsn)
-            mq: asyncio.Queue[tuple] = asyncio.Queue()
+            off_main, pool = _make_off_main()
+            storage = _make_storage(dsn)
+            mq: MetadataQueue = asyncio.Queue()
             wq = _make_write_queue()
-            await on_dir_created(sub, off_main, mq, wq, scan_contents=False)
+            await on_dir_created(sub, storage, off_main, mq, wq, scan_contents=False)
             await _drain_write_queue(wq)
 
             node = get_node_by_id(dsn, node_id_from_stat(sub.stat()))
@@ -599,9 +635,10 @@ class TestExcludeUnderExcludedFolder(unittest.IsolatedAsyncioTestCase):
             # @eaDir is on disk but NOT in DB; only tmp is in DB
             _insert_dir_node(dsn, tmp, SUPER_ROOT_ID)
 
-            off_main, pool = _make_off_main(dsn)
-            mq: asyncio.Queue[tuple] = asyncio.Queue()
-            await on_close_write(thumb, off_main, mq)
+            off_main, pool = _make_off_main()
+            storage = _make_storage(dsn)
+            mq: MetadataQueue = asyncio.Queue()
+            await on_close_write(thumb, storage, off_main, mq)
 
             # Parent not in DB → ignored
             self.assertTrue(mq.empty())

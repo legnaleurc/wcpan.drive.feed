@@ -1,42 +1,38 @@
 import asyncio
-from collections.abc import AsyncIterator, Callable, Coroutine
+from collections.abc import AsyncIterator
+from functools import partial
 from logging import getLogger
 from pathlib import Path
-from typing import Any
 
 from .._db import (
-    OffMainThread,
-    delete_nodes_and_emit_changes,
-    get_all_node_ids_under,
-    get_node_by_id,
-    get_node_by_parent_name,
+    Storage,
     node_id_from_stat,
-    upsert_node_and_emit_change,
 )
 from .._exclude import is_excluded
-from .._lib import stat_to_times
-from .._types import NodeRecord
+from .._lib import OffMainThread, stat_to_times
+from .._types import MetadataQueue, NodeRecord, WriteQueue
 
 
 _L = getLogger(__name__)
 
-WriteQueue = asyncio.Queue[Callable[[], Coroutine[None, None, None]]]
 
-
-async def get_parent_node_id(path: Path, off_main: OffMainThread) -> str | None:
+async def get_parent_node_id(
+    path: Path, storage: Storage, off_main: OffMainThread
+) -> str | None:
     try:
         st = path.parent.stat()
     except OSError:
         return None
     parent_id = node_id_from_stat(st)
-    parent = await off_main(get_node_by_id, parent_id)
+    parent = await off_main(storage.get_node_by_id, parent_id)
     return parent_id if parent else None
 
 
 async def on_file_stub(
     path: Path,
+    storage: Storage,
     off_main: OffMainThread,
-    metadata_queue: asyncio.Queue[tuple[NodeRecord, Path]],
+    metadata_queue: MetadataQueue,
     exclude: tuple[str, ...] = (),
 ) -> None:
     """Queue a pending file node for metadata computation — no DB write until metadata is ready."""
@@ -49,7 +45,7 @@ async def on_file_stub(
     ctime, mtime = stat_to_times(st)
     node_id = node_id_from_stat(st)
     _L.debug("create file stub: %s", path)
-    parent_id = await get_parent_node_id(path, off_main)
+    parent_id = await get_parent_node_id(path, storage, off_main)
     if parent_id is None:
         return
     node = NodeRecord(
@@ -73,8 +69,9 @@ async def on_file_stub(
 
 async def on_close_write(
     path: Path,
+    storage: Storage,
     off_main: OffMainThread,
-    metadata_queue: asyncio.Queue[tuple[NodeRecord, Path]],
+    metadata_queue: MetadataQueue,
     exclude: tuple[str, ...] = (),
 ) -> None:
     """Queue file node for metadata computation on CLOSE_WRITE — no DB write until metadata is ready."""
@@ -87,9 +84,9 @@ async def on_close_write(
     ctime, mtime = stat_to_times(st)
     node_id = node_id_from_stat(st)
     _L.debug("close write: %s", path)
-    existing = await off_main(get_node_by_id, node_id)
+    existing = await off_main(storage.get_node_by_id, node_id)
     if existing is None:
-        parent_id = await get_parent_node_id(path, off_main)
+        parent_id = await get_parent_node_id(path, storage, off_main)
         if parent_id is None:
             return
         node = NodeRecord(
@@ -131,6 +128,7 @@ async def on_close_write(
 async def on_delete(
     path: Path,
     is_dir: bool,
+    storage: Storage,
     off_main: OffMainThread,
     write_queue: WriteQueue,
 ) -> None:
@@ -140,26 +138,26 @@ async def on_delete(
         parent_st = path.parent.stat()
     except OSError:
         return
-    parent_node = await off_main(get_node_by_id, node_id_from_stat(parent_st))
+    parent_node = await off_main(storage.get_node_by_id, node_id_from_stat(parent_st))
     if parent_node is None:
         return
-    node = await off_main(get_node_by_parent_name, parent_node.node_id, path.name)
+    node = await off_main(
+        storage.get_node_by_parent_name, parent_node.node_id, path.name
+    )
     if node is None:
         return
     node_ids = [node.node_id]
     if is_dir:
-        node_ids += await off_main(get_all_node_ids_under, node.node_id)
+        node_ids += await off_main(storage.get_all_node_ids_under, node.node_id)
 
-    async def _w(node_ids=node_ids) -> None:
-        await off_main(delete_nodes_and_emit_changes, node_ids)
-
-    await write_queue.put(_w)
+    await write_queue.put(partial(storage.delete_nodes_and_emit_changes, node_ids))
 
 
 async def on_move(
     src: Path,
     dst: Path,
     is_dir: bool,
+    storage: Storage,
     off_main: OffMainThread,
     write_queue: WriteQueue,
     exclude: tuple[str, ...] = (),
@@ -177,10 +175,10 @@ async def on_move(
     except OSError:
         return True
     node_id = node_id_from_stat(st)
-    existing = await off_main(get_node_by_id, node_id)
+    existing = await off_main(storage.get_node_by_id, node_id)
     if existing is None:
         return False
-    new_parent = await get_parent_node_id(dst, off_main)
+    new_parent = await get_parent_node_id(dst, storage, off_main)
     if new_parent is None:
         return True
     node = NodeRecord(
@@ -200,17 +198,15 @@ async def on_move(
         ms_duration=existing.ms_duration,
     )
 
-    async def _w(node=node) -> None:
-        await off_main(upsert_node_and_emit_change, node)
-
-    await write_queue.put(_w)
+    await write_queue.put(partial(storage.upsert_node_and_emit_change, node))
     return True
 
 
 async def on_dir_created(
     path: Path,
+    storage: Storage,
     off_main: OffMainThread,
-    metadata_queue: asyncio.Queue[tuple[NodeRecord, Path]],
+    metadata_queue: MetadataQueue,
     write_queue: WriteQueue,
     *,
     scan_contents: bool,
@@ -230,7 +226,7 @@ async def on_dir_created(
     ctime, mtime = stat_to_times(st)
     node_id = node_id_from_stat(st)
     _L.debug("dir created: %s (scan_contents=%s)", path, scan_contents)
-    parent_id = await get_parent_node_id(path, off_main)
+    parent_id = await get_parent_node_id(path, storage, off_main)
     if parent_id is None:
         return
     node = NodeRecord(
@@ -250,10 +246,7 @@ async def on_dir_created(
         ms_duration=0,
     )
 
-    async def _w(node=node) -> None:
-        await off_main(upsert_node_and_emit_change, node)
-
-    await write_queue.put(_w)
+    await write_queue.put(partial(storage.upsert_node_and_emit_change, node))
 
     if not scan_contents:
         return
@@ -292,11 +285,9 @@ async def on_dir_created(
                 ms_duration=0,
             )
             if entry.is_dir():
-
-                async def _w(n=enode) -> None:
-                    await off_main(upsert_node_and_emit_change, n)
-
-                await write_queue.put(_w)
+                await write_queue.put(
+                    partial(storage.upsert_node_and_emit_change, enode)
+                )
                 stack.append((entry, eid))
             else:
                 await metadata_queue.put((enode, entry))
@@ -304,19 +295,20 @@ async def on_dir_created(
 
 async def flush_pending_moves(
     pending_from: dict[int, tuple[Path, bool]],
+    storage: Storage,
     off_main: OffMainThread,
     write_queue: WriteQueue,
 ) -> None:
     for cookie, (stale_path, stale_is_dir) in list(pending_from.items()):
         del pending_from[cookie]
         try:
-            await on_delete(stale_path, stale_is_dir, off_main, write_queue)
+            await on_delete(stale_path, stale_is_dir, storage, off_main, write_queue)
         except Exception:
             _L.exception("delete failed for stale move: %s", stale_path)
 
 
-async def events_with_move_timeout(
-    source: AsyncIterator[Any],
+async def events_with_move_timeout[T](
+    source: AsyncIterator[T],
     pending_from: dict[int, tuple[Path, bool]],
     stale_timeout: float = 1.0,
 ):
