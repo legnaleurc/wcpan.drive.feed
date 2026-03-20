@@ -33,6 +33,7 @@ fanotify = [
 
 [project.scripts]
 "wcpan.drive.feed" = "wcpan.drive.feed._main:main"
+"wcpan.drive.feed.backfill" = "wcpan.drive.feed._backfill:main"
 
 [project.urls]
 source = "https://github.com/legnaleurc/wcpan.drive.feed"
