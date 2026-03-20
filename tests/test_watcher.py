@@ -3,7 +3,6 @@ import unittest
 from datetime import datetime, timezone
 from pathlib import Path
 
-from wcpan.drive.feed._app import _scan_directory
 from wcpan.drive.feed._db import (
     SUPER_ROOT_ID,
     emit_change,
@@ -13,6 +12,7 @@ from wcpan.drive.feed._db import (
     upsert_node,
 )
 from wcpan.drive.feed._lib import is_removed_change
+from wcpan.drive.feed._scanner import _scan_directory
 from wcpan.drive.feed._types import MetadataQueue, NodeRecord, WriteQueue
 from wcpan.drive.feed._watcher._lib import (
     events_with_move_timeout,

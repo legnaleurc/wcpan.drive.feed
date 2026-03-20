@@ -27,11 +27,11 @@ _MASK = Mask.CREATE | Mask.DELETE | Mask.CLOSE_WRITE | Mask.MOVED_FROM | Mask.MO
 
 async def run_watcher(
     watch_paths: list[str],
+    *,
     storage: Storage,
     off_main: OffMainThread,
     metadata_queue: asyncio.Queue[tuple[NodeRecord, Path]],
     write_queue: WriteQueue,
-    *,
     exclude: tuple[str, ...] = (),
 ) -> None:
     """Main watcher coroutine. Uses RecursiveInotify for automatic recursive watching."""

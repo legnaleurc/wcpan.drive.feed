@@ -200,11 +200,11 @@ class FanotifyWatcher:
     async def __call__(
         self,
         watch_paths: list[str],
+        *,
         storage: Storage,
         off_main: OffMainThread,
         metadata_queue: asyncio.Queue[tuple[NodeRecord, Path]],
         write_queue: WriteQueue,
-        *,
         exclude: tuple[str, ...] = (),
     ) -> None:
         with _fanotify_fd(
