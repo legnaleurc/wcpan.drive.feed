@@ -4,7 +4,7 @@ An HTTP server that watches local filesystem paths with inotify, computes file m
 
 ## Features
 
-- Watches directories recursively via inotify (Linux only)
+- Watches directories recursively via inotify or fanotify (Linux only)
 - Computes MD5 hash, MIME type, and image/video dimensions per file
 - Token-based change log API: clients request only changes since their last cursor
 - Merges intermediate events (e.g. multiple modifies → single update; create+delete → skip)
@@ -12,8 +12,8 @@ An HTTP server that watches local filesystem paths with inotify, computes file m
 
 ## Requirements
 
-- Linux (inotify)
-- Python 3.12+
+- Linux (inotify or fanotify)
+- Python 3.13+
 - `libmagic1` and `mediainfo` system packages
 
 ## Installation
@@ -22,8 +22,9 @@ An HTTP server that watches local filesystem paths with inotify, computes file m
 # Install system dependencies
 apt-get install libmagic1 mediainfo
 
-# Install Python dependencies
-make venv
+# Install Python package with your chosen watcher backend
+pip install "wcpan-drive-feed[inotify]"   # inotify backend
+pip install "wcpan-drive-feed[fanotify]"  # fanotify backend
 ```
 
 ## Configuration
@@ -37,12 +38,20 @@ database_url: "/data/db/server.db"
 watches:
   media: /mnt/media
   photos: /mnt/photos
+watcher:
+  backend: inotify  # or "fanotify"
+# Optional:
+# exclude:
+#   - "*.tmp"
+# log_path: /data/logs/server.log
 ```
+
+The `watcher.backend` field is required and must be either `"inotify"` or `"fanotify"`.
 
 ## Running
 
 ```bash
-uv run -m wcpan.drive.feed --config=/path/to/server.yaml
+wcpan.drive.feed --config=/path/to/server.yaml
 ```
 
 The `--config` flag defaults to `/data/server.yaml`.
@@ -142,7 +151,8 @@ make lint
 
 ## How It Works
 
-1. On startup, the server checks the database schema version. A new database is initialized automatically; a version mismatch raises an error and stops the server. Then it scans all configured watch paths and inserts/updates nodes in the local SQLite database.
-2. watchdog monitors each path for filesystem events (create, modify, delete, move).
-3. File metadata (MD5, MIME type, image/video dimensions) is computed in a `ProcessPoolExecutor` to avoid blocking the event loop.
+1. On startup, the server initializes the SQLite database (auto-creates schema; aborts on version mismatch), then scans all configured watch paths and inserts/updates nodes.
+2. The configured watcher backend (`asyncinotify` or a custom `fanotify` backend) monitors each path for filesystem events (create, modify, delete, move).
+3. File metadata (MD5, MIME type, image/video dimensions) is computed in a `ThreadPoolExecutor` to avoid blocking the event loop.
 4. Every change is appended to a `changes` table. The `/changes` endpoint merges overlapping events per node — the last event wins — so clients always see the effective state.
+5. The server returns HTTP 503 while the startup scan and queue drain are in progress.
