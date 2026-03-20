@@ -116,6 +116,14 @@ class Storage:
     def bulk_delete_nodes(self, node_ids: list[str]) -> None:
         bulk_delete_nodes(self._dsn, node_ids)
 
+    def bulk_scan_flush(
+        self,
+        upserts: list[NodeRecord],
+        deletes: list[str],
+        changes: list[tuple[str, bool]],
+    ) -> None:
+        bulk_scan_flush(self._dsn, upserts, deletes, changes)
+
 
 @contextmanager
 def _connect(dsn: str, *, timeout: float = 5.0):
@@ -463,3 +471,25 @@ def bulk_delete_nodes(dsn: str, node_ids: list[str]) -> None:
             "DELETE FROM nodes WHERE node_id = ?",
             [(nid,) for nid in node_ids],
         )
+
+
+def bulk_scan_flush(
+    dsn: str,
+    upserts: list[NodeRecord],
+    deletes: list[str],
+    changes: list[tuple[str, bool]],
+) -> None:
+    """Atomically upsert nodes, delete nodes, and emit change records."""
+    with read_write(dsn) as cursor:
+        if upserts:
+            cursor.executemany(_UPSERT_NODE_SQL, [_node_to_params(n) for n in upserts])
+        if deletes:
+            cursor.executemany(
+                "DELETE FROM nodes WHERE node_id = ?",
+                [(nid,) for nid in deletes],
+            )
+        if changes:
+            cursor.executemany(
+                "INSERT INTO changes (node_id, is_removed) VALUES (?, ?)",
+                [(node_id, 1 if removed else 0) for node_id, removed in changes],
+            )

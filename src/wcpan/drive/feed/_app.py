@@ -158,19 +158,14 @@ async def _scan_directory(
 
     # 2. Flush as a single write_queue task so the upsert always precedes any
     #    metadata update writes (write_queue is FIFO, single consumer).
-    def _flush(
-        pending_upserts=pending_upserts,
-        pending_deletes=pending_deletes,
-        pending_dir_and_delete_changes=pending_dir_and_delete_changes,
-    ) -> None:
-        if pending_upserts:
-            storage.bulk_upsert_nodes(pending_upserts)
-        if pending_deletes:
-            storage.bulk_delete_nodes(pending_deletes)
-        if pending_dir_and_delete_changes:
-            storage.bulk_emit_changes(pending_dir_and_delete_changes)
-
-    await write_queue.put(_flush)
+    await write_queue.put(
+        partial(
+            storage.bulk_scan_flush,
+            pending_upserts,
+            pending_deletes,
+            pending_dir_and_delete_changes,
+        )
+    )
 
     # 3. Enqueue metadata jobs; write_queue's FIFO order ensures the flush
     #    above runs before any metadata upsert reaches the DB.
