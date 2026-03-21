@@ -44,7 +44,12 @@ async def run_watcher(
 
         async for event in events_with_move_timeout(inotify, pending_from):
             if event is None:
-                await flush_pending_moves(pending_from, storage, off_main, write_queue)
+                await flush_pending_moves(
+                    pending_from,
+                    storage=storage,
+                    off_main=off_main,
+                    write_queue=write_queue,
+                )
                 continue
 
             if event.path is None:
@@ -61,7 +66,12 @@ async def run_watcher(
 
             # Flush unmatched MOVED_FROM entries as deletes
             if Mask.MOVED_TO not in event.mask:
-                await flush_pending_moves(pending_from, storage, off_main, write_queue)
+                await flush_pending_moves(
+                    pending_from,
+                    storage=storage,
+                    off_main=off_main,
+                    write_queue=write_queue,
+                )
 
             try:
                 _L.debug("event %s: %s", event.mask, path)
@@ -77,10 +87,10 @@ async def run_watcher(
                             src_path,
                             path,
                             is_dir,
-                            storage,
-                            off_main,
-                            write_queue,
-                            exclude,
+                            storage=storage,
+                            off_main=off_main,
+                            write_queue=write_queue,
+                            exclude=exclude,
                         )
                         if is_new_arrival:
                             _L.debug(
@@ -93,41 +103,45 @@ async def run_watcher(
                         if is_dir:
                             await on_dir_created(
                                 path,
-                                storage,
-                                off_main,
-                                metadata_queue,
-                                write_queue,
-                                scan_contents=True,
+                                True,
+                                storage=storage,
+                                metadata_queue=metadata_queue,
+                                write_queue=write_queue,
                                 exclude=exclude,
                             )
                         else:
                             await on_file_stub(
-                                path, storage, off_main, metadata_queue, exclude
+                                path, metadata_queue=metadata_queue, exclude=exclude
                             )
 
                 elif Mask.CREATE in event.mask:
                     if is_dir:
                         await on_dir_created(
                             path,
-                            storage,
-                            off_main,
-                            metadata_queue,
-                            write_queue,
-                            scan_contents=False,
+                            False,
+                            storage=storage,
+                            metadata_queue=metadata_queue,
+                            write_queue=write_queue,
                             exclude=exclude,
                         )
-                    else:
-                        # Stub only; metadata arrives on CLOSE_WRITE
-                        await on_file_stub(
-                            path, storage, off_main, metadata_queue, exclude
-                        )
+                    # else: ignore — file is empty/partial; metadata arrives on CLOSE_WRITE
 
                 elif Mask.DELETE in event.mask:
-                    await on_delete(path, is_dir, storage, off_main, write_queue)
+                    await on_delete(
+                        path,
+                        is_dir,
+                        storage=storage,
+                        off_main=off_main,
+                        write_queue=write_queue,
+                    )
 
                 elif Mask.CLOSE_WRITE in event.mask:
                     await on_close_write(
-                        path, storage, off_main, metadata_queue, exclude
+                        path,
+                        storage=storage,
+                        off_main=off_main,
+                        metadata_queue=metadata_queue,
+                        exclude=exclude,
                     )
 
             except Exception:

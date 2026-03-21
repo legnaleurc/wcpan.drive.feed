@@ -68,6 +68,9 @@ class Storage:
     def upsert_node_and_emit_change(self, node: NodeRecord) -> None:
         upsert_node_and_emit_change(self._dsn, node)
 
+    def upsert_node_if_parent_known_and_emit_change(self, node: NodeRecord) -> None:
+        upsert_node_if_parent_known_and_emit_change(self._dsn, node)
+
     def delete_node(self, node_id: str) -> None:
         delete_node(self._dsn, node_id)
 
@@ -247,6 +250,23 @@ def upsert_node(dsn: str, node: NodeRecord) -> None:
 def upsert_node_and_emit_change(dsn: str, node: NodeRecord) -> None:
     """Atomically upsert a node and emit an update change record."""
     with read_write(dsn) as cursor:
+        cursor.execute(_UPSERT_NODE_SQL, _node_to_params(node))
+        cursor.execute(
+            "INSERT INTO changes (node_id, is_removed) VALUES (?, 0)",
+            (node.node_id,),
+        )
+
+
+def upsert_node_if_parent_known_and_emit_change(dsn: str, node: NodeRecord) -> None:
+    """Upsert node + emit change only if parent exists in DB (checked in same transaction)."""
+    with read_write(dsn) as cursor:
+        if (
+            cursor.execute(
+                "SELECT 1 FROM nodes WHERE node_id = ?", (node.parent_id,)
+            ).fetchone()
+            is None
+        ):
+            return
         cursor.execute(_UPSERT_NODE_SQL, _node_to_params(node))
         cursor.execute(
             "INSERT INTO changes (node_id, is_removed) VALUES (?, 0)",

@@ -292,53 +292,66 @@ async def _dispatch(
         if 0 in pending_from:
             src_path, src_is_dir = pending_from.pop(0)
             tracked = await on_move(
-                src_path, path, is_dir, storage, off_main, write_queue, exclude
+                src_path,
+                path,
+                is_dir,
+                storage=storage,
+                off_main=off_main,
+                write_queue=write_queue,
+                exclude=exclude,
             )
             if not tracked:
                 # Source was untracked — treat destination as new arrival
                 if is_dir:
                     await on_dir_created(
                         path,
-                        storage,
-                        off_main,
-                        metadata_queue,
-                        write_queue,
-                        scan_contents=True,
+                        True,
+                        storage=storage,
+                        metadata_queue=metadata_queue,
+                        write_queue=write_queue,
                         exclude=exclude,
                     )
                 else:
-                    await on_file_stub(path, storage, off_main, metadata_queue, exclude)
+                    await on_file_stub(
+                        path, metadata_queue=metadata_queue, exclude=exclude
+                    )
         else:
             # No matching MOVED_FROM — treat as new arrival
             if is_dir:
                 await on_dir_created(
                     path,
-                    storage,
-                    off_main,
-                    metadata_queue,
-                    write_queue,
-                    scan_contents=True,
+                    True,
+                    storage=storage,
+                    metadata_queue=metadata_queue,
+                    write_queue=write_queue,
                     exclude=exclude,
                 )
             else:
-                await on_file_stub(path, storage, off_main, metadata_queue, exclude)
+                await on_file_stub(path, metadata_queue=metadata_queue, exclude=exclude)
 
     elif mask & FAN_CREATE:
         if is_dir:
             await on_dir_created(
                 path,
-                storage,
-                off_main,
-                metadata_queue,
-                write_queue,
-                scan_contents=False,
+                False,
+                storage=storage,
+                metadata_queue=metadata_queue,
+                write_queue=write_queue,
                 exclude=exclude,
             )
         else:
-            await on_file_stub(path, storage, off_main, metadata_queue, exclude)
+            await on_file_stub(path, metadata_queue=metadata_queue, exclude=exclude)
 
     elif mask & FAN_DELETE:
-        await on_delete(path, is_dir, storage, off_main, write_queue)
+        await on_delete(
+            path, is_dir, storage=storage, off_main=off_main, write_queue=write_queue
+        )
 
     elif mask & FAN_CLOSE_WRITE:
-        await on_close_write(path, storage, off_main, metadata_queue, exclude)
+        await on_close_write(
+            path,
+            storage=storage,
+            off_main=off_main,
+            metadata_queue=metadata_queue,
+            exclude=exclude,
+        )

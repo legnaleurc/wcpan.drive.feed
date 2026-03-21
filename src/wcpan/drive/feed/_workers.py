@@ -71,7 +71,9 @@ async def metadata_worker(
                 ms_duration=meta.ms_duration,
             )
 
-            await write_queue.put(partial(storage.upsert_node_and_emit_change, node))
+            await write_queue.put(
+                partial(storage.upsert_node_if_parent_known_and_emit_change, node)
+            )
             _L.debug(
                 "metadata done: %s mime=%s hash=%s", path, meta.mime_type, meta.hash
             )

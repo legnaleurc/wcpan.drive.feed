@@ -17,6 +17,8 @@ _DEFAULT_EXCLUDES: tuple[str, ...] = (
     "#recycle",
     # QNAP
     ".@__thumb",
+    # Download staging files (renamed to final name on completion)
+    "*.__tmp__",
 )
 
 
