@@ -1,5 +1,3 @@
-import asyncio
-from collections.abc import AsyncIterator
 from functools import partial
 from logging import getLogger
 from pathlib import Path
@@ -287,24 +285,3 @@ class WatcherHandlers:
                 await self.on_delete(stale_path, stale_is_dir)
             except Exception:
                 _L.exception("delete failed for stale move: %s", stale_path)
-
-
-async def events_with_move_timeout[T](
-    source: AsyncIterator[T],
-    pending_from: dict[int, tuple[Path, bool]],
-    *,
-    stale_timeout: float = 1.0,
-):
-    """Yield inotify events, injecting None when a pending MOVED_FROM goes
-    unmatched for stale_timeout seconds (file moved outside watched area).
-    """
-    src = aiter(source)
-    while True:
-        timeout = stale_timeout if pending_from else None
-        try:
-            async with asyncio.timeout(timeout):
-                yield await anext(src)
-        except TimeoutError:
-            yield None
-        except StopAsyncIteration:
-            return

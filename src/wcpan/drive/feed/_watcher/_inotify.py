@@ -1,12 +1,36 @@
+import asyncio
+from collections.abc import AsyncIterator
 from logging import getLogger
 from pathlib import Path
 
 from asyncinotify import Mask, RecursiveInotify
 
-from ._lib import WatcherHandlers, events_with_move_timeout
+from ._lib import WatcherHandlers
 
 
 _L = getLogger(__name__)
+
+
+async def events_with_move_timeout[T](
+    source: AsyncIterator[T],
+    pending_from: dict[int, tuple[Path, bool]],
+    *,
+    stale_timeout: float = 1.0,
+):
+    """Yield inotify events, injecting None when a pending MOVED_FROM goes
+    unmatched for stale_timeout seconds (file moved outside watched area).
+    """
+    src = aiter(source)
+    while True:
+        timeout = stale_timeout if pending_from else None
+        try:
+            async with asyncio.timeout(timeout):
+                yield await anext(src)
+        except TimeoutError:
+            yield None
+        except StopAsyncIteration:
+            return
+
 
 # RecursiveInotify internally adds MOVED_FROM | MOVED_TO | CREATE | IGNORED
 # to every directory watch for management; we add our file-event flags on top.

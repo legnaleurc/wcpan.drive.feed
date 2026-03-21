@@ -14,10 +14,7 @@ from wcpan.drive.feed._db import (
 from wcpan.drive.feed._lib import is_removed_change
 from wcpan.drive.feed._scanner import _scan_directory
 from wcpan.drive.feed._types import MetadataQueue, NodeRecord, WriteQueue
-from wcpan.drive.feed._watcher._lib import (
-    WatcherHandlers,
-    events_with_move_timeout,
-)
+from wcpan.drive.feed._watcher._lib import WatcherHandlers
 
 from ._lib import create_db_sandbox, create_fs_sandbox, node_id_from_change
 
@@ -617,39 +614,6 @@ class TestFlushPendingMoves(unittest.IsolatedAsyncioTestCase):
             await handlers.flush_pending_moves(pending_from)
             self.assertEqual(pending_from, {})
             pool.shutdown(wait=False)
-
-
-class TestEventsWithMoveTimeout(unittest.IsolatedAsyncioTestCase):
-    async def test_passes_through_events(self):
-        sentinel = object()
-
-        async def source():
-            yield sentinel
-
-        pending_from: dict[int, tuple[Path, bool]] = {}
-        result: list[object] = []
-        async for event in events_with_move_timeout(
-            source(), pending_from, stale_timeout=0.05
-        ):
-            result.append(event)
-
-        self.assertEqual(result, [sentinel])
-
-    async def test_yields_none_on_timeout_when_pending(self):
-        async def never_yields():
-            await asyncio.sleep(10)
-            return
-            yield  # makes this an async generator
-
-        pending_from = {1: (Path("/some/path"), False)}
-        result: list[object] = []
-        async for event in events_with_move_timeout(
-            never_yields(), pending_from, stale_timeout=0.05
-        ):
-            result.append(event)
-            break  # stop after the timeout-injected None
-
-        self.assertEqual(result, [None])
 
 
 class TestExcludeUnderExcludedFolder(unittest.IsolatedAsyncioTestCase):
