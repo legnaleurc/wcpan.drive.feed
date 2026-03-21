@@ -16,9 +16,9 @@ class WatcherBackend(Protocol):
 def make_watcher_backend(config: WatcherConfig) -> WatcherBackend:
     match config:
         case FanotifyWatcherConfig():
-            from ._fanotify import FanotifyWatcher
+            from ._fanotify import run_watcher
 
-            return FanotifyWatcher()
+            return run_watcher
         case InotifyWatcherConfig():
             from ._inotify import run_watcher
 

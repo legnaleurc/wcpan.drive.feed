@@ -187,72 +187,69 @@ def _extract_path(data: bytes, fh_offset: int, end: int) -> Path | None:
     return parent / name
 
 
-class FanotifyWatcher:
-    async def __call__(
-        self,
-        watch_paths: list[str],
-        *,
-        handlers: WatcherHandlers,
-    ) -> None:
-        with _fanotify_fd(
-            FAN_CLASS_NOTIF | FAN_REPORT_DFID_NAME, O_RDONLY | O_CLOEXEC | O_LARGEFILE
-        ) as fan_fd:
-            # Mark each unique filesystem once
-            seen_devs: set[int] = set()
-            for p in watch_paths:
-                st = Path(p).resolve().stat()
-                if st.st_dev not in seen_devs:
-                    seen_devs.add(st.st_dev)
-                    ret = lib.fanotify_mark(
-                        fan_fd,
-                        FAN_MARK_ADD | FAN_MARK_FILESYSTEM,
-                        _FAN_MASK,
-                        AT_FDCWD,
-                        p.encode(),
-                    )
-                    if ret < 0:
-                        raise OSError(ffi.errno, f"fanotify_mark failed for {p}")
+async def run_watcher(
+    watch_paths: list[str],
+    *,
+    handlers: WatcherHandlers,
+) -> None:
+    with _fanotify_fd(
+        FAN_CLASS_NOTIF | FAN_REPORT_DFID_NAME, O_RDONLY | O_CLOEXEC | O_LARGEFILE
+    ) as fan_fd:
+        # Mark each unique filesystem once
+        seen_devs: set[int] = set()
+        for p in watch_paths:
+            st = Path(p).resolve().stat()
+            if st.st_dev not in seen_devs:
+                seen_devs.add(st.st_dev)
+                ret = lib.fanotify_mark(
+                    fan_fd,
+                    FAN_MARK_ADD | FAN_MARK_FILESYSTEM,
+                    _FAN_MASK,
+                    AT_FDCWD,
+                    p.encode(),
+                )
+                if ret < 0:
+                    raise OSError(ffi.errno, f"fanotify_mark failed for {p}")
 
-            loop = asyncio.get_event_loop()
-            ready = asyncio.Event()
-            loop.add_reader(fan_fd, ready.set)
-            watch_roots = [Path(p).resolve() for p in watch_paths]
-            # cookie → (path, is_dir); fanotify move cookies are per-event pairs
-            pending_from: dict[int, tuple[Path, bool]] = {}
-            _move_seq = 0
+        loop = asyncio.get_event_loop()
+        ready = asyncio.Event()
+        loop.add_reader(fan_fd, ready.set)
+        watch_roots = [Path(p).resolve() for p in watch_paths]
+        # cookie → (path, is_dir); fanotify move cookies are per-event pairs
+        pending_from: dict[int, tuple[Path, bool]] = {}
 
-            try:
-                while True:
-                    await ready.wait()
-                    ready.clear()
-                    try:
-                        data = os.read(fan_fd, _READ_SIZE)
-                    except OSError:
-                        _L.exception("fanotify read failed")
+        try:
+            while True:
+                await ready.wait()
+                ready.clear()
+                try:
+                    data = os.read(fan_fd, _READ_SIZE)
+                except OSError:
+                    _L.exception("fanotify read failed")
+                    continue
+
+                for mask, _cookie, path in _parse_events(data):
+                    if path is None:
                         continue
-
-                    for mask, _cookie, path in _parse_events(data):
-                        if path is None:
-                            continue
-                        if not any(path.is_relative_to(r) for r in watch_roots):
-                            continue
-                        is_dir = bool(mask & FAN_ONDIR)
-                        try:
-                            await _dispatch(
-                                mask,
-                                path,
-                                is_dir,
-                                pending_from,
-                                handlers,
-                            )
-                        except TimeoutError:
-                            raise  # DB unresponsive — let TaskGroup crash the app; Docker restarts
-                        except Exception:
-                            _L.exception(
-                                "event handler failed: mask=%#x path=%s", mask, path
-                            )
-            finally:
-                loop.remove_reader(fan_fd)
+                    if not any(path.is_relative_to(r) for r in watch_roots):
+                        continue
+                    is_dir = bool(mask & FAN_ONDIR)
+                    try:
+                        await _dispatch(
+                            mask,
+                            path,
+                            is_dir,
+                            pending_from,
+                            handlers,
+                        )
+                    except TimeoutError:
+                        raise  # DB unresponsive — let TaskGroup crash the app; Docker restarts
+                    except Exception:
+                        _L.exception(
+                            "event handler failed: mask=%#x path=%s", mask, path
+                        )
+        finally:
+            loop.remove_reader(fan_fd)
 
 
 async def _dispatch(
