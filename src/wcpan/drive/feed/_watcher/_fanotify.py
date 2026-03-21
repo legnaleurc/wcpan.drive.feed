@@ -8,16 +8,7 @@ from pathlib import Path
 
 import cffi
 
-from .._db import Storage
-from .._lib import OffMainThread
-from .._types import NodeRecord, WriteQueue
-from ._lib import (
-    on_close_write,
-    on_delete,
-    on_dir_created,
-    on_file_stub,
-    on_move,
-)
+from ._lib import WatcherHandlers
 
 
 _L = getLogger(__name__)
@@ -201,11 +192,7 @@ class FanotifyWatcher:
         self,
         watch_paths: list[str],
         *,
-        storage: Storage,
-        off_main: OffMainThread,
-        metadata_queue: asyncio.Queue[tuple[NodeRecord, Path]],
-        write_queue: WriteQueue,
-        exclude: tuple[str, ...] = (),
+        handlers: WatcherHandlers,
     ) -> None:
         with _fanotify_fd(
             FAN_CLASS_NOTIF | FAN_REPORT_DFID_NAME, O_RDONLY | O_CLOEXEC | O_LARGEFILE
@@ -256,11 +243,7 @@ class FanotifyWatcher:
                                 path,
                                 is_dir,
                                 pending_from,
-                                storage,
-                                off_main,
-                                metadata_queue,
-                                write_queue,
-                                exclude,
+                                handlers,
                             )
                         except Exception:
                             _L.exception(
@@ -275,11 +258,7 @@ async def _dispatch(
     path: Path,
     is_dir: bool,
     pending_from: dict[int, tuple[Path, bool]],
-    storage: Storage,
-    off_main: OffMainThread,
-    metadata_queue: asyncio.Queue[tuple[NodeRecord, Path]],
-    write_queue: WriteQueue,
-    exclude: tuple[str, ...],
+    handlers: WatcherHandlers,
 ) -> None:
     """Dispatch a single fanotify event to the appropriate handler."""
     if mask & FAN_MOVED_FROM:
@@ -291,67 +270,28 @@ async def _dispatch(
     elif mask & FAN_MOVED_TO:
         if 0 in pending_from:
             src_path, src_is_dir = pending_from.pop(0)
-            tracked = await on_move(
-                src_path,
-                path,
-                is_dir,
-                storage=storage,
-                off_main=off_main,
-                write_queue=write_queue,
-                exclude=exclude,
-            )
+            tracked = await handlers.on_move(src_path, path, is_dir)
             if not tracked:
                 # Source was untracked — treat destination as new arrival
                 if is_dir:
-                    await on_dir_created(
-                        path,
-                        True,
-                        storage=storage,
-                        metadata_queue=metadata_queue,
-                        write_queue=write_queue,
-                        exclude=exclude,
-                    )
+                    await handlers.on_dir_created(path, True)
                 else:
-                    await on_file_stub(
-                        path, metadata_queue=metadata_queue, exclude=exclude
-                    )
+                    await handlers.on_file_stub(path)
         else:
             # No matching MOVED_FROM — treat as new arrival
             if is_dir:
-                await on_dir_created(
-                    path,
-                    True,
-                    storage=storage,
-                    metadata_queue=metadata_queue,
-                    write_queue=write_queue,
-                    exclude=exclude,
-                )
+                await handlers.on_dir_created(path, True)
             else:
-                await on_file_stub(path, metadata_queue=metadata_queue, exclude=exclude)
+                await handlers.on_file_stub(path)
 
     elif mask & FAN_CREATE:
         if is_dir:
-            await on_dir_created(
-                path,
-                False,
-                storage=storage,
-                metadata_queue=metadata_queue,
-                write_queue=write_queue,
-                exclude=exclude,
-            )
+            await handlers.on_dir_created(path, False)
         else:
-            await on_file_stub(path, metadata_queue=metadata_queue, exclude=exclude)
+            await handlers.on_file_stub(path)
 
     elif mask & FAN_DELETE:
-        await on_delete(
-            path, is_dir, storage=storage, off_main=off_main, write_queue=write_queue
-        )
+        await handlers.on_delete(path, is_dir)
 
     elif mask & FAN_CLOSE_WRITE:
-        await on_close_write(
-            path,
-            storage=storage,
-            off_main=off_main,
-            metadata_queue=metadata_queue,
-            exclude=exclude,
-        )
+        await handlers.on_close_write(path)

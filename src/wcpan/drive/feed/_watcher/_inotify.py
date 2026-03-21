@@ -1,21 +1,9 @@
-import asyncio
 from logging import getLogger
 from pathlib import Path
 
 from asyncinotify import Mask, RecursiveInotify
 
-from .._db import Storage
-from .._lib import OffMainThread
-from .._types import NodeRecord, WriteQueue
-from ._lib import (
-    events_with_move_timeout,
-    flush_pending_moves,
-    on_close_write,
-    on_delete,
-    on_dir_created,
-    on_file_stub,
-    on_move,
-)
+from ._lib import WatcherHandlers, events_with_move_timeout
 
 
 _L = getLogger(__name__)
@@ -28,11 +16,7 @@ _MASK = Mask.CREATE | Mask.DELETE | Mask.CLOSE_WRITE | Mask.MOVED_FROM | Mask.MO
 async def run_watcher(
     watch_paths: list[str],
     *,
-    storage: Storage,
-    off_main: OffMainThread,
-    metadata_queue: asyncio.Queue[tuple[NodeRecord, Path]],
-    write_queue: WriteQueue,
-    exclude: tuple[str, ...] = (),
+    handlers: WatcherHandlers,
 ) -> None:
     """Main watcher coroutine. Uses RecursiveInotify for automatic recursive watching."""
     # pending MOVED_FROM: cookie → (src_path, is_dir)
@@ -44,12 +28,7 @@ async def run_watcher(
 
         async for event in events_with_move_timeout(inotify, pending_from):
             if event is None:
-                await flush_pending_moves(
-                    pending_from,
-                    storage=storage,
-                    off_main=off_main,
-                    write_queue=write_queue,
-                )
+                await handlers.flush_pending_moves(pending_from)
                 continue
 
             if event.path is None:
@@ -66,12 +45,7 @@ async def run_watcher(
 
             # Flush unmatched MOVED_FROM entries as deletes
             if Mask.MOVED_TO not in event.mask:
-                await flush_pending_moves(
-                    pending_from,
-                    storage=storage,
-                    off_main=off_main,
-                    write_queue=write_queue,
-                )
+                await handlers.flush_pending_moves(pending_from)
 
             try:
                 _L.debug("event %s: %s", event.mask, path)
@@ -83,14 +57,8 @@ async def run_watcher(
                     is_new_arrival = True
                     if event.cookie in pending_from:
                         src_path, _ = pending_from.pop(event.cookie)
-                        is_new_arrival = not await on_move(
-                            src_path,
-                            path,
-                            is_dir,
-                            storage=storage,
-                            off_main=off_main,
-                            write_queue=write_queue,
-                            exclude=exclude,
+                        is_new_arrival = not await handlers.on_move(
+                            src_path, path, is_dir
                         )
                         if is_new_arrival:
                             _L.debug(
@@ -101,48 +69,20 @@ async def run_watcher(
                         # Moved in from outside watched area, or source was an
                         # untracked temp file (e.g. excluded upload staging file).
                         if is_dir:
-                            await on_dir_created(
-                                path,
-                                True,
-                                storage=storage,
-                                metadata_queue=metadata_queue,
-                                write_queue=write_queue,
-                                exclude=exclude,
-                            )
+                            await handlers.on_dir_created(path, True)
                         else:
-                            await on_file_stub(
-                                path, metadata_queue=metadata_queue, exclude=exclude
-                            )
+                            await handlers.on_file_stub(path)
 
                 elif Mask.CREATE in event.mask:
                     if is_dir:
-                        await on_dir_created(
-                            path,
-                            False,
-                            storage=storage,
-                            metadata_queue=metadata_queue,
-                            write_queue=write_queue,
-                            exclude=exclude,
-                        )
+                        await handlers.on_dir_created(path, False)
                     # else: ignore — file is empty/partial; metadata arrives on CLOSE_WRITE
 
                 elif Mask.DELETE in event.mask:
-                    await on_delete(
-                        path,
-                        is_dir,
-                        storage=storage,
-                        off_main=off_main,
-                        write_queue=write_queue,
-                    )
+                    await handlers.on_delete(path, is_dir)
 
                 elif Mask.CLOSE_WRITE in event.mask:
-                    await on_close_write(
-                        path,
-                        storage=storage,
-                        off_main=off_main,
-                        metadata_queue=metadata_queue,
-                        exclude=exclude,
-                    )
+                    await handlers.on_close_write(path)
 
             except Exception:
                 _L.exception("event handler failed: %s %s", event.mask, path)

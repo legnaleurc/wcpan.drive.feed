@@ -15,13 +15,8 @@ from wcpan.drive.feed._lib import is_removed_change
 from wcpan.drive.feed._scanner import _scan_directory
 from wcpan.drive.feed._types import MetadataQueue, NodeRecord, WriteQueue
 from wcpan.drive.feed._watcher._lib import (
+    WatcherHandlers,
     events_with_move_timeout,
-    flush_pending_moves,
-    on_close_write,
-    on_delete,
-    on_dir_created,
-    on_file_stub,
-    on_move,
 )
 
 from ._lib import create_db_sandbox, create_fs_sandbox, node_id_from_change
@@ -109,9 +104,13 @@ class TestOnFileStub(unittest.IsolatedAsyncioTestCase):
             off_main, pool = _make_off_main()
             storage = _make_storage(dsn)
             mq: MetadataQueue = asyncio.Queue()
+            wq = _make_write_queue()
 
             _insert_dir_node(dsn, tmp, SUPER_ROOT_ID)
-            await on_file_stub(f, metadata_queue=mq)
+            handlers = WatcherHandlers(
+                storage=storage, off_main=off_main, metadata_queue=mq, write_queue=wq
+            )
+            await handlers.on_file_stub(f)
 
             # File stays out of DB until metadata worker runs
             node = get_node_by_id(dsn, node_id_from_stat(f.stat()))
@@ -128,9 +127,13 @@ class TestOnFileStub(unittest.IsolatedAsyncioTestCase):
             off_main, pool = _make_off_main()
             storage = _make_storage(dsn)
             mq: MetadataQueue = asyncio.Queue()
+            wq = _make_write_queue()
 
             _insert_dir_node(dsn, tmp, SUPER_ROOT_ID)
-            await on_file_stub(f, metadata_queue=mq)
+            handlers = WatcherHandlers(
+                storage=storage, off_main=off_main, metadata_queue=mq, write_queue=wq
+            )
+            await handlers.on_file_stub(f)
 
             changes, _ = get_changes_since(dsn, 0)
             node_ids = {node_id_from_change(c) for c in changes}
@@ -142,7 +145,11 @@ class TestOnFileStub(unittest.IsolatedAsyncioTestCase):
             off_main, pool = _make_off_main()
             storage = _make_storage(dsn)
             mq: MetadataQueue = asyncio.Queue()
-            await on_file_stub(tmp / "nonexistent.txt", metadata_queue=mq)
+            wq = _make_write_queue()
+            handlers = WatcherHandlers(
+                storage=storage, off_main=off_main, metadata_queue=mq, write_queue=wq
+            )
+            await handlers.on_file_stub(tmp / "nonexistent.txt")
             pool.shutdown(wait=False)
 
     async def test_parent_not_in_db_queues_for_deferred_check(self):
@@ -156,7 +163,11 @@ class TestOnFileStub(unittest.IsolatedAsyncioTestCase):
             off_main, pool = _make_off_main()
             storage = _make_storage(dsn)
             mq: MetadataQueue = asyncio.Queue()
-            await on_file_stub(f, metadata_queue=mq)
+            wq = _make_write_queue()
+            handlers = WatcherHandlers(
+                storage=storage, off_main=off_main, metadata_queue=mq, write_queue=wq
+            )
+            await handlers.on_file_stub(f)
 
             # File is still queued — parent check happens in write_worker
             self.assertFalse(mq.empty())
@@ -175,9 +186,11 @@ class TestOnCloseWrite(unittest.IsolatedAsyncioTestCase):
             off_main, pool = _make_off_main()
             storage = _make_storage(dsn)
             mq: MetadataQueue = asyncio.Queue()
-            await on_close_write(
-                f, storage=storage, off_main=off_main, metadata_queue=mq
+            wq = _make_write_queue()
+            handlers = WatcherHandlers(
+                storage=storage, off_main=off_main, metadata_queue=mq, write_queue=wq
             )
+            await handlers.on_close_write(f)
 
             # Node is queued for metadata — no DB write yet
             self.assertFalse(mq.empty())
@@ -196,9 +209,11 @@ class TestOnCloseWrite(unittest.IsolatedAsyncioTestCase):
             off_main, pool = _make_off_main()
             storage = _make_storage(dsn)
             mq: MetadataQueue = asyncio.Queue()
-            await on_close_write(
-                f, storage=storage, off_main=off_main, metadata_queue=mq
+            wq = _make_write_queue()
+            handlers = WatcherHandlers(
+                storage=storage, off_main=off_main, metadata_queue=mq, write_queue=wq
             )
+            await handlers.on_close_write(f)
 
             # Node is queued for metadata — no DB write yet
             self.assertFalse(mq.empty())
@@ -216,10 +231,12 @@ class TestOnDelete(unittest.IsolatedAsyncioTestCase):
 
             off_main, pool = _make_off_main()
             storage = _make_storage(dsn)
+            mq: MetadataQueue = asyncio.Queue()
             wq = _make_write_queue()
-            await on_delete(
-                f, False, storage=storage, off_main=off_main, write_queue=wq
+            handlers = WatcherHandlers(
+                storage=storage, off_main=off_main, metadata_queue=mq, write_queue=wq
             )
+            await handlers.on_delete(f, False)
             await _drain_write_queue(wq)
 
             changes, _ = get_changes_since(dsn, 0)
@@ -247,10 +264,12 @@ class TestOnDelete(unittest.IsolatedAsyncioTestCase):
 
             off_main, pool = _make_off_main()
             storage = _make_storage(dsn)
+            mq: MetadataQueue = asyncio.Queue()
             wq = _make_write_queue()
-            await on_delete(
-                subdir, True, storage=storage, off_main=off_main, write_queue=wq
+            handlers = WatcherHandlers(
+                storage=storage, off_main=off_main, metadata_queue=mq, write_queue=wq
             )
+            await handlers.on_delete(subdir, True)
             await _drain_write_queue(wq)
 
             changes, _ = get_changes_since(dsn, 0)
@@ -273,10 +292,12 @@ class TestOnMove(unittest.IsolatedAsyncioTestCase):
 
             off_main, pool = _make_off_main()
             storage = _make_storage(dsn)
+            mq: MetadataQueue = asyncio.Queue()
             wq = _make_write_queue()
-            await on_move(
-                src, dst, False, storage=storage, off_main=off_main, write_queue=wq
+            handlers = WatcherHandlers(
+                storage=storage, off_main=off_main, metadata_queue=mq, write_queue=wq
             )
+            await handlers.on_move(src, dst, False)
             await _drain_write_queue(wq)
 
             node = get_node_by_id(dsn, file_id)
@@ -297,10 +318,12 @@ class TestOnMove(unittest.IsolatedAsyncioTestCase):
 
             off_main, pool = _make_off_main()
             storage = _make_storage(dsn)
+            mq: MetadataQueue = asyncio.Queue()
             wq = _make_write_queue()
-            await on_move(
-                src, dst, True, storage=storage, off_main=off_main, write_queue=wq
+            handlers = WatcherHandlers(
+                storage=storage, off_main=off_main, metadata_queue=mq, write_queue=wq
             )
+            await handlers.on_move(src, dst, True)
             await _drain_write_queue(wq)
 
             node = get_node_by_id(dsn, dir_id)
@@ -322,10 +345,12 @@ class TestOnMove(unittest.IsolatedAsyncioTestCase):
 
             off_main, pool = _make_off_main()
             storage = _make_storage(dsn)
+            mq: MetadataQueue = asyncio.Queue()
             wq = _make_write_queue()
-            result = await on_move(
-                src, dst, False, storage=storage, off_main=off_main, write_queue=wq
+            handlers = WatcherHandlers(
+                storage=storage, off_main=off_main, metadata_queue=mq, write_queue=wq
             )
+            result = await handlers.on_move(src, dst, False)
 
             self.assertFalse(result)
             # dst should also not be in DB — caller is responsible for inserting it
@@ -348,10 +373,12 @@ class TestOnMove(unittest.IsolatedAsyncioTestCase):
 
             off_main, pool = _make_off_main()
             storage = _make_storage(dsn)
+            mq: MetadataQueue = asyncio.Queue()
             wq = _make_write_queue()
-            await on_move(
-                src, dst, True, storage=storage, off_main=off_main, write_queue=wq
+            handlers = WatcherHandlers(
+                storage=storage, off_main=off_main, metadata_queue=mq, write_queue=wq
             )
+            await handlers.on_move(src, dst, True)
             await _drain_write_queue(wq)
 
             changes, _ = get_changes_since(dsn, 0)
@@ -371,9 +398,10 @@ class TestOnDirCreated(unittest.IsolatedAsyncioTestCase):
             storage = _make_storage(dsn)
             mq: MetadataQueue = asyncio.Queue()
             wq = _make_write_queue()
-            await on_dir_created(
-                new_dir, False, storage=storage, metadata_queue=mq, write_queue=wq
+            handlers = WatcherHandlers(
+                storage=storage, off_main=off_main, metadata_queue=mq, write_queue=wq
             )
+            await handlers.on_dir_created(new_dir, False)
             await _drain_write_queue(wq)
 
             node = get_node_by_id(dsn, node_id_from_stat(new_dir.stat()))
@@ -392,9 +420,10 @@ class TestOnDirCreated(unittest.IsolatedAsyncioTestCase):
             storage = _make_storage(dsn)
             mq: MetadataQueue = asyncio.Queue()
             wq = _make_write_queue()
-            await on_dir_created(
-                new_dir, False, storage=storage, metadata_queue=mq, write_queue=wq
+            handlers = WatcherHandlers(
+                storage=storage, off_main=off_main, metadata_queue=mq, write_queue=wq
             )
+            await handlers.on_dir_created(new_dir, False)
             await _drain_write_queue(wq)
 
             dir_id = node_id_from_stat(new_dir.stat())
@@ -415,9 +444,10 @@ class TestOnDirCreated(unittest.IsolatedAsyncioTestCase):
             storage = _make_storage(dsn)
             mq: MetadataQueue = asyncio.Queue()
             wq = _make_write_queue()
-            await on_dir_created(
-                moved_in, True, storage=storage, metadata_queue=mq, write_queue=wq
+            handlers = WatcherHandlers(
+                storage=storage, off_main=off_main, metadata_queue=mq, write_queue=wq
             )
+            await handlers.on_dir_created(moved_in, True)
             await _drain_write_queue(wq)
 
             self.assertFalse(mq.empty())
@@ -472,7 +502,11 @@ class TestExcludeOnEvents(unittest.IsolatedAsyncioTestCase):
             off_main, pool = _make_off_main()
             storage = _make_storage(dsn)
             mq: MetadataQueue = asyncio.Queue()
-            await on_file_stub(f, metadata_queue=mq)
+            wq = _make_write_queue()
+            handlers = WatcherHandlers(
+                storage=storage, off_main=off_main, metadata_queue=mq, write_queue=wq
+            )
+            await handlers.on_file_stub(f)
 
             self.assertTrue(mq.empty())
             pool.shutdown(wait=False)
@@ -487,9 +521,10 @@ class TestExcludeOnEvents(unittest.IsolatedAsyncioTestCase):
             storage = _make_storage(dsn)
             mq: MetadataQueue = asyncio.Queue()
             wq = _make_write_queue()
-            await on_dir_created(
-                ea_dir, False, storage=storage, metadata_queue=mq, write_queue=wq
+            handlers = WatcherHandlers(
+                storage=storage, off_main=off_main, metadata_queue=mq, write_queue=wq
             )
+            await handlers.on_dir_created(ea_dir, False)
             await _drain_write_queue(wq)
 
             node = get_node_by_id(dsn, node_id_from_stat(ea_dir.stat()))
@@ -505,9 +540,11 @@ class TestExcludeOnEvents(unittest.IsolatedAsyncioTestCase):
             off_main, pool = _make_off_main()
             storage = _make_storage(dsn)
             mq: MetadataQueue = asyncio.Queue()
-            await on_close_write(
-                f, storage=storage, off_main=off_main, metadata_queue=mq
+            wq = _make_write_queue()
+            handlers = WatcherHandlers(
+                storage=storage, off_main=off_main, metadata_queue=mq, write_queue=wq
             )
+            await handlers.on_close_write(f)
 
             self.assertTrue(mq.empty())
             pool.shutdown(wait=False)
@@ -524,10 +561,12 @@ class TestExcludeOnEvents(unittest.IsolatedAsyncioTestCase):
 
             off_main, pool = _make_off_main()
             storage = _make_storage(dsn)
+            mq: MetadataQueue = asyncio.Queue()
             wq = _make_write_queue()
-            await on_move(
-                src, dst, True, storage=storage, off_main=off_main, write_queue=wq
+            handlers = WatcherHandlers(
+                storage=storage, off_main=off_main, metadata_queue=mq, write_queue=wq
             )
+            await handlers.on_move(src, dst, True)
             await _drain_write_queue(wq)
 
             node = get_node_by_id(dsn, dir_id)
@@ -549,10 +588,12 @@ class TestFlushPendingMoves(unittest.IsolatedAsyncioTestCase):
             pending_from = {1: (f, False)}
             off_main, pool = _make_off_main()
             storage = _make_storage(dsn)
+            mq: MetadataQueue = asyncio.Queue()
             wq = _make_write_queue()
-            await flush_pending_moves(
-                pending_from, storage=storage, off_main=off_main, write_queue=wq
+            handlers = WatcherHandlers(
+                storage=storage, off_main=off_main, metadata_queue=mq, write_queue=wq
             )
+            await handlers.flush_pending_moves(pending_from)
             await _drain_write_queue(wq)
 
             self.assertEqual(pending_from, {})
@@ -567,11 +608,13 @@ class TestFlushPendingMoves(unittest.IsolatedAsyncioTestCase):
         with create_db_sandbox() as dsn, create_fs_sandbox() as _:
             off_main, pool = _make_off_main()
             storage = _make_storage(dsn)
+            mq: MetadataQueue = asyncio.Queue()
             wq = _make_write_queue()
-            pending_from: dict[int, tuple[Path, bool]] = {}
-            await flush_pending_moves(
-                pending_from, storage=storage, off_main=off_main, write_queue=wq
+            handlers = WatcherHandlers(
+                storage=storage, off_main=off_main, metadata_queue=mq, write_queue=wq
             )
+            pending_from: dict[int, tuple[Path, bool]] = {}
+            await handlers.flush_pending_moves(pending_from)
             self.assertEqual(pending_from, {})
             pool.shutdown(wait=False)
 
@@ -627,7 +670,11 @@ class TestExcludeUnderExcludedFolder(unittest.IsolatedAsyncioTestCase):
             off_main, pool = _make_off_main()
             storage = _make_storage(dsn)
             mq: MetadataQueue = asyncio.Queue()
-            await on_file_stub(thumb, metadata_queue=mq)
+            wq = _make_write_queue()
+            handlers = WatcherHandlers(
+                storage=storage, off_main=off_main, metadata_queue=mq, write_queue=wq
+            )
+            await handlers.on_file_stub(thumb)
 
             # File is queued — parent check (and drop) happens in write_worker
             self.assertFalse(mq.empty())
@@ -646,9 +693,10 @@ class TestExcludeUnderExcludedFolder(unittest.IsolatedAsyncioTestCase):
             storage = _make_storage(dsn)
             mq: MetadataQueue = asyncio.Queue()
             wq = _make_write_queue()
-            await on_dir_created(
-                sub, False, storage=storage, metadata_queue=mq, write_queue=wq
+            handlers = WatcherHandlers(
+                storage=storage, off_main=off_main, metadata_queue=mq, write_queue=wq
             )
+            await handlers.on_dir_created(sub, False)
             await _drain_write_queue(wq)
 
             node = get_node_by_id(dsn, node_id_from_stat(sub.stat()))
@@ -668,9 +716,11 @@ class TestExcludeUnderExcludedFolder(unittest.IsolatedAsyncioTestCase):
             off_main, pool = _make_off_main()
             storage = _make_storage(dsn)
             mq: MetadataQueue = asyncio.Queue()
-            await on_close_write(
-                thumb, storage=storage, off_main=off_main, metadata_queue=mq
+            wq = _make_write_queue()
+            handlers = WatcherHandlers(
+                storage=storage, off_main=off_main, metadata_queue=mq, write_queue=wq
             )
+            await handlers.on_close_write(thumb)
 
             # File is queued — parent check (and drop) happens in write_worker
             self.assertFalse(mq.empty())
@@ -709,9 +759,11 @@ class TestTmpExclude(unittest.IsolatedAsyncioTestCase):
             off_main, pool = _make_off_main()
             storage = _make_storage(dsn)
             mq: MetadataQueue = asyncio.Queue()
-            await on_close_write(
-                staging, storage=storage, off_main=off_main, metadata_queue=mq
+            wq = _make_write_queue()
+            handlers = WatcherHandlers(
+                storage=storage, off_main=off_main, metadata_queue=mq, write_queue=wq
             )
+            await handlers.on_close_write(staging)
 
             self.assertTrue(mq.empty())
             pool.shutdown(wait=False)
@@ -726,7 +778,11 @@ class TestTmpExclude(unittest.IsolatedAsyncioTestCase):
             off_main, pool = _make_off_main()
             storage = _make_storage(dsn)
             mq: MetadataQueue = asyncio.Queue()
-            await on_file_stub(staging, metadata_queue=mq)
+            wq = _make_write_queue()
+            handlers = WatcherHandlers(
+                storage=storage, off_main=off_main, metadata_queue=mq, write_queue=wq
+            )
+            await handlers.on_file_stub(staging)
 
             self.assertTrue(mq.empty())
             pool.shutdown(wait=False)
@@ -744,15 +800,12 @@ class TestTmpExclude(unittest.IsolatedAsyncioTestCase):
 
             off_main, pool = _make_off_main()
             storage = _make_storage(dsn)
+            mq: MetadataQueue = asyncio.Queue()
             wq = _make_write_queue()
-            result = await on_move(
-                staging,
-                final,
-                False,
-                storage=storage,
-                off_main=off_main,
-                write_queue=wq,
+            handlers = WatcherHandlers(
+                storage=storage, off_main=off_main, metadata_queue=mq, write_queue=wq
             )
+            result = await handlers.on_move(staging, final, False)
 
             self.assertFalse(result)
             pool.shutdown(wait=False)
@@ -772,14 +825,13 @@ class TestDeferredParentCheck(unittest.IsolatedAsyncioTestCase):
             storage = _make_storage(dsn)
             mq: MetadataQueue = asyncio.Queue()
             wq = _make_write_queue()
+            handlers = WatcherHandlers(
+                storage=storage, off_main=off_main, metadata_queue=mq, write_queue=wq
+            )
 
             # Enqueue both without draining in between
-            await on_dir_created(
-                parent_dir, False, storage=storage, metadata_queue=mq, write_queue=wq
-            )
-            await on_dir_created(
-                child_dir, False, storage=storage, metadata_queue=mq, write_queue=wq
-            )
+            await handlers.on_dir_created(parent_dir, False)
+            await handlers.on_dir_created(child_dir, False)
 
             # Now drain — parent write runs first, then child write sees parent in DB
             await _drain_write_queue(wq)
@@ -805,13 +857,14 @@ class TestDeferredParentCheck(unittest.IsolatedAsyncioTestCase):
             storage = _make_storage(dsn)
             mq: MetadataQueue = asyncio.Queue()
             wq = _make_write_queue()
+            handlers = WatcherHandlers(
+                storage=storage, off_main=off_main, metadata_queue=mq, write_queue=wq
+            )
 
             # Enqueue parent dir write (not yet committed)
-            await on_dir_created(
-                parent_dir, False, storage=storage, metadata_queue=mq, write_queue=wq
-            )
+            await handlers.on_dir_created(parent_dir, False)
             # Queue file for metadata — parent DB check is deferred to write_worker
-            await on_file_stub(f, metadata_queue=mq)
+            await handlers.on_file_stub(f)
 
             self.assertFalse(mq.empty())
             pool.shutdown(wait=False)
@@ -830,10 +883,11 @@ class TestDeferredParentCheck(unittest.IsolatedAsyncioTestCase):
             storage = _make_storage(dsn)
             mq: MetadataQueue = asyncio.Queue()
             wq = _make_write_queue()
-
-            await on_dir_created(
-                child, False, storage=storage, metadata_queue=mq, write_queue=wq
+            handlers = WatcherHandlers(
+                storage=storage, off_main=off_main, metadata_queue=mq, write_queue=wq
             )
+
+            await handlers.on_dir_created(child, False)
             await _drain_write_queue(wq)
 
             self.assertIsNone(get_node_by_id(dsn, node_id_from_stat(child.stat())))

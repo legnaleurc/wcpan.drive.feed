@@ -1,16 +1,7 @@
-import asyncio
-from pathlib import Path
 from typing import Protocol
 
-from .._db import Storage
-from .._lib import OffMainThread
-from .._types import (
-    FanotifyWatcherConfig,
-    InotifyWatcherConfig,
-    NodeRecord,
-    WatcherConfig,
-    WriteQueue,
-)
+from .._types import FanotifyWatcherConfig, InotifyWatcherConfig, WatcherConfig
+from ._lib import WatcherHandlers
 
 
 class WatcherBackend(Protocol):
@@ -18,11 +9,7 @@ class WatcherBackend(Protocol):
         self,
         watch_paths: list[str],
         *,
-        storage: Storage,
-        off_main: OffMainThread,
-        metadata_queue: asyncio.Queue[tuple[NodeRecord, Path]],
-        write_queue: WriteQueue,
-        exclude: tuple[str, ...] = (),
+        handlers: WatcherHandlers,
     ) -> None: ...
 
 
