@@ -289,9 +289,21 @@ class WatcherConsumer:
             ms_duration=existing.ms_duration,
         )
 
-        await self._write_queue.put(
-            partial(self._storage.upsert_node_if_parent_known_and_emit_change, node)
-        )
+        if is_dir:
+            child_ids = await self._off_main(
+                self._storage.get_all_node_ids_under, node.node_id
+            )
+            await self._write_queue.put(
+                partial(
+                    self._storage.upsert_node_if_parent_known_and_emit_move_changes,
+                    node,
+                    child_ids,
+                )
+            )
+        else:
+            await self._write_queue.put(
+                partial(self._storage.upsert_node_if_parent_known_and_emit_change, node)
+            )
         return True
 
     async def _process_dir_created(self, path: Path, scan_contents: bool) -> None:

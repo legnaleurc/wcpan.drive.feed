@@ -118,6 +118,16 @@ async def _scan_directory(
         for node_id in children_by_parent.get(parent_id, []):
             if node_id not in dir_seen:
                 _L.debug("scan delete: %s", node_id)
+                # If it's a directory, recursively collect all descendants using the
+                # in-memory index so orphaned subtrees are fully cleaned up.
+                if existing_by_id[node_id].is_directory:
+                    stack_del = [node_id]
+                    while stack_del:
+                        pid = stack_del.pop()
+                        for child_id in children_by_parent.get(pid, []):
+                            pending_deletes.append(child_id)
+                            pending_dir_and_delete_changes.append((child_id, True))
+                            stack_del.append(child_id)
                 pending_deletes.append(node_id)
                 pending_dir_and_delete_changes.append((node_id, True))
 

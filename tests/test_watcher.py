@@ -369,6 +369,36 @@ class TestOnMove(unittest.IsolatedAsyncioTestCase):
             self.assertIsNone(get_node_by_id(dsn, node_id_from_stat(dst.stat())))
             pool.shutdown(wait=False)
 
+    async def test_move_dir_emits_changes_for_children(self):
+        with create_db_sandbox() as dsn, create_fs_sandbox() as tmp:
+            src = tmp / "srcdir"
+            src.mkdir()
+            f = src / "child.txt"
+            f.write_text("content")
+
+            parent_id = _insert_dir_node(dsn, tmp, SUPER_ROOT_ID)
+            dir_id = _insert_dir_node(dsn, src, parent_id)
+            file_id = _insert_file_node(dsn, f, dir_id)
+
+            dst = tmp / "dstdir"
+            src.rename(dst)
+
+            off_main, pool = _make_off_main()
+            mq = _make_metadata_queue()
+            wq = _make_write_queue()
+            handlers, consumer = _make_watcher(dsn, off_main, mq, wq)
+            handlers.on_move(src, dst, True)
+            await _drain_consumer_queue(consumer)
+            await _drain_write_queue(wq)
+
+            changes, _ = get_changes_since(dsn, 0)
+            updated_ids = {
+                node_id_from_change(c) for c in changes if not is_removed_change(c)
+            }
+            self.assertIn(dir_id, updated_ids)
+            self.assertIn(file_id, updated_ids)
+            pool.shutdown(wait=False)
+
     async def test_move_to_unknown_parent_is_ignored(self):
         """Moving to a destination whose parent is not in DB emits nothing."""
         with create_db_sandbox() as dsn, create_fs_sandbox() as tmp:

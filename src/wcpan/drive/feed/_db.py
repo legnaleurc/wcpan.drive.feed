@@ -71,6 +71,11 @@ class Storage:
     def upsert_node_if_parent_known_and_emit_change(self, node: NodeRecord) -> None:
         upsert_node_if_parent_known_and_emit_change(self._dsn, node)
 
+    def upsert_node_if_parent_known_and_emit_move_changes(
+        self, node: NodeRecord, child_ids: list[str]
+    ) -> None:
+        upsert_node_if_parent_known_and_emit_move_changes(self._dsn, node, child_ids)
+
     def delete_node(self, node_id: str) -> None:
         delete_node(self._dsn, node_id)
 
@@ -272,6 +277,34 @@ def upsert_node_if_parent_known_and_emit_change(dsn: str, node: NodeRecord) -> N
             "INSERT INTO changes (node_id, is_removed) VALUES (?, 0)",
             (node.node_id,),
         )
+
+
+def upsert_node_if_parent_known_and_emit_move_changes(
+    dsn: str, node: NodeRecord, child_ids: list[str]
+) -> None:
+    """Upsert node + emit changes for node and all children, only if parent exists.
+
+    Used for directory moves: atomically updates the directory and notifies consumers
+    that every child's effective path has changed.
+    """
+    with read_write(dsn) as cursor:
+        if (
+            cursor.execute(
+                "SELECT 1 FROM nodes WHERE node_id = ?", (node.parent_id,)
+            ).fetchone()
+            is None
+        ):
+            return
+        cursor.execute(_UPSERT_NODE_SQL, _node_to_params(node))
+        cursor.execute(
+            "INSERT INTO changes (node_id, is_removed) VALUES (?, 0)",
+            (node.node_id,),
+        )
+        if child_ids:
+            cursor.executemany(
+                "INSERT INTO changes (node_id, is_removed) VALUES (?, 0)",
+                [(cid,) for cid in child_ids],
+            )
 
 
 def delete_nodes_and_emit_changes(dsn: str, node_ids: list[str]) -> None:
