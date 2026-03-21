@@ -6,7 +6,7 @@ from .._db import (
     Storage,
     node_id_from_stat,
 )
-from .._exclude import is_excluded
+from .._exclude import is_excluded, is_path_excluded
 from .._lib import OffMainThread, stat_to_times
 from .._types import MetadataQueue, NodeRecord, WriteQueue
 
@@ -40,7 +40,7 @@ class WatcherHandlers:
 
     async def on_new_file(self, path: Path) -> None:
         """Queue a complete file (new to DB) for metadata computation — no DB write until metadata is ready."""
-        if is_excluded(path.name, self._exclude):
+        if is_path_excluded(path, self._exclude):
             return
         try:
             st = path.stat()
@@ -72,7 +72,7 @@ class WatcherHandlers:
 
     async def on_close_write(self, path: Path) -> None:
         """Queue file node for metadata computation on CLOSE_WRITE — no DB write until metadata is ready."""
-        if is_excluded(path.name, self._exclude):
+        if is_path_excluded(path, self._exclude):
             return
         try:
             st = path.stat()
@@ -154,7 +154,7 @@ class WatcherHandlers:
         Returns False if the source node was not in the DB (caller should treat dst
         as a newly-arrived file/directory instead).
         """
-        if is_excluded(dst.name, self._exclude):
+        if is_path_excluded(dst, self._exclude):
             return True
         _L.debug("move: %s -> %s", src, dst)
         try:
@@ -196,7 +196,7 @@ class WatcherHandlers:
         scan_contents=True when the directory was moved in from outside the watched
         area and may already contain files that won't trigger further events.
         """
-        if is_excluded(path.name, self._exclude):
+        if is_path_excluded(path, self._exclude):
             return
         try:
             st = path.stat()

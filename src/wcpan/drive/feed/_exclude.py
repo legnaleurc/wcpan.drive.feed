@@ -1,4 +1,5 @@
 from fnmatch import fnmatch
+from pathlib import Path
 
 
 _DEFAULT_EXCLUDES: tuple[str, ...] = (
@@ -24,3 +25,7 @@ _DEFAULT_EXCLUDES: tuple[str, ...] = (
 
 def is_excluded(name: str, extra: tuple[str, ...] = ()) -> bool:
     return any(fnmatch(name, p) for p in _DEFAULT_EXCLUDES + extra)
+
+
+def is_path_excluded(path: Path, extra: tuple[str, ...] = ()) -> bool:
+    return any(is_excluded(part, extra) for part in path.parts)

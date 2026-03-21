@@ -582,12 +582,10 @@ class TestFlushPendingMoves(unittest.IsolatedAsyncioTestCase):
 
 
 class TestExcludeUnderExcludedFolder(unittest.IsolatedAsyncioTestCase):
-    """These tests expose the orphaned-node bug: events for items whose parent
-    is an excluded (and therefore absent) directory still insert a node with
-    parent_id=NULL instead of being silently dropped."""
+    """Files under excluded directories are silently dropped without being queued."""
 
     async def test_new_file_under_excluded_dir(self):
-        """File under excluded dir is queued to mq; write is dropped because parent not in DB."""
+        """File under excluded dir is dropped immediately — not queued."""
         with create_db_sandbox() as dsn, create_fs_sandbox() as tmp:
             ea_dir = tmp / "@eaDir"
             ea_dir.mkdir()
@@ -605,8 +603,7 @@ class TestExcludeUnderExcludedFolder(unittest.IsolatedAsyncioTestCase):
             )
             await handlers.on_new_file(thumb)
 
-            # File is queued — parent check (and drop) happens in write_worker
-            self.assertFalse(mq.empty())
+            self.assertTrue(mq.empty())
             pool.shutdown(wait=False)
 
     async def test_dir_created_under_excluded_dir(self):
@@ -633,7 +630,7 @@ class TestExcludeUnderExcludedFolder(unittest.IsolatedAsyncioTestCase):
             pool.shutdown(wait=False)
 
     async def test_close_write_under_excluded_dir(self):
-        """File under excluded dir is queued to mq; write is dropped because parent not in DB."""
+        """File under excluded dir is dropped immediately — not queued."""
         with create_db_sandbox() as dsn, create_fs_sandbox() as tmp:
             ea_dir = tmp / "@eaDir"
             ea_dir.mkdir()
@@ -651,8 +648,7 @@ class TestExcludeUnderExcludedFolder(unittest.IsolatedAsyncioTestCase):
             )
             await handlers.on_close_write(thumb)
 
-            # File is queued — parent check (and drop) happens in write_worker
-            self.assertFalse(mq.empty())
+            self.assertTrue(mq.empty())
             pool.shutdown(wait=False)
 
 
