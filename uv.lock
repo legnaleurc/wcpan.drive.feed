@@ -664,6 +664,7 @@ inotify = [
 dev = [
     { name = "aiohttp", extra = ["speedups"] },
     { name = "ruff" },
+    { name = "wcpan-drive-feed", extra = ["fanotify", "inotify"] },
 ]
 
 [package.metadata]
@@ -682,6 +683,7 @@ provides-extras = ["inotify", "fanotify"]
 dev = [
     { name = "aiohttp", extras = ["speedups"], specifier = ">=3.13.0,<4.0.0" },
     { name = "ruff", specifier = ">=0.15.0,<1.0.0" },
+    { name = "wcpan-drive-feed", extras = ["inotify", "fanotify"] },
 ]
 
 [[package]]

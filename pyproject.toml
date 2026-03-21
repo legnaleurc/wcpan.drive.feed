@@ -39,6 +39,7 @@ source = "https://github.com/legnaleurc/wcpan.drive.feed"
 
 [dependency-groups]
 dev = [
+    "wcpan-drive-feed[inotify,fanotify]",
     "ruff>=0.15.0,<1.0.0",
     "aiohttp[speedups]>=3.13.0,<4.0.0",
 ]
