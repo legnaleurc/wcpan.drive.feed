@@ -1,5 +1,12 @@
 from ._backend import WatcherBackend, make_watcher_backend
-from ._lib import WatcherHandlers
+from ._lib import EventQueue, WatcherConsumer, WatcherHandlers, create_event_queue
 
 
-__all__ = ["WatcherBackend", "WatcherHandlers", "make_watcher_backend"]
+__all__ = [
+    "EventQueue",
+    "WatcherBackend",
+    "WatcherConsumer",
+    "WatcherHandlers",
+    "create_event_queue",
+    "make_watcher_backend",
+]

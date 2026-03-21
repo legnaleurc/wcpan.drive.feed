@@ -235,15 +235,13 @@ async def run_watcher(
                         continue
                     is_dir = bool(mask & FAN_ONDIR)
                     try:
-                        await _dispatch(
+                        _dispatch(
                             mask,
                             path,
                             is_dir,
                             pending_from,
                             handlers,
                         )
-                    except TimeoutError:
-                        raise  # DB unresponsive — let TaskGroup crash the app; Docker restarts
                     except Exception:
                         _L.exception(
                             "event handler failed: mask=%#x path=%s", mask, path
@@ -252,7 +250,7 @@ async def run_watcher(
             loop.remove_reader(fan_fd)
 
 
-async def _dispatch(
+def _dispatch(
     mask: int,
     path: Path,
     is_dir: bool,
@@ -269,27 +267,21 @@ async def _dispatch(
     elif mask & FAN_MOVED_TO:
         if 0 in pending_from:
             src_path, src_is_dir = pending_from.pop(0)
-            tracked = await handlers.on_move(src_path, path, is_dir)
-            if not tracked:
-                # Source was untracked — treat destination as new arrival
-                if is_dir:
-                    await handlers.on_dir_created(path, True)
-                else:
-                    await handlers.on_new_file(path)
+            handlers.on_move(src_path, path, is_dir)
         else:
             # No matching MOVED_FROM — treat as new arrival
             if is_dir:
-                await handlers.on_dir_created(path, True)
+                handlers.on_dir_created(path, True)
             else:
-                await handlers.on_new_file(path)
+                handlers.on_new_file(path)
 
     elif mask & FAN_CREATE:
         if is_dir:
-            await handlers.on_dir_created(path, False)
+            handlers.on_dir_created(path, False)
         # else: ignore — file may be partial; metadata arrives on CLOSE_WRITE
 
     elif mask & FAN_DELETE:
-        await handlers.on_delete(path, is_dir)
+        handlers.on_delete(path, is_dir)
 
     elif mask & FAN_CLOSE_WRITE:
-        await handlers.on_close_write(path)
+        handlers.on_close_write(path)

@@ -52,7 +52,7 @@ async def run_watcher(
 
         async for event in events_with_move_timeout(inotify, pending_from):
             if event is None:
-                await handlers.flush_pending_moves(pending_from)
+                handlers.flush_pending_moves(pending_from)
                 continue
 
             if event.path is None:
@@ -69,46 +69,29 @@ async def run_watcher(
 
             # Flush unmatched MOVED_FROM entries as deletes
             if Mask.MOVED_TO not in event.mask:
-                await handlers.flush_pending_moves(pending_from)
+                handlers.flush_pending_moves(pending_from)
 
-            try:
-                _L.debug("event %s: %s", event.mask, path)
-                if Mask.MOVED_FROM in event.mask:
-                    pending_from[event.cookie] = (path, is_dir)
+            _L.debug("event %s: %s", event.mask, path)
+            if Mask.MOVED_FROM in event.mask:
+                pending_from[event.cookie] = (path, is_dir)
 
-                elif Mask.MOVED_TO in event.mask:
-                    # Assume new arrival unless on_move confirms it was tracked.
-                    is_new_arrival = True
-                    if event.cookie in pending_from:
-                        src_path, _ = pending_from.pop(event.cookie)
-                        is_new_arrival = not await handlers.on_move(
-                            src_path, path, is_dir
-                        )
-                        if is_new_arrival:
-                            _L.debug(
-                                "move source untracked, treating dst as new: %s", path
-                            )
-
-                    if is_new_arrival:
-                        # Moved in from outside watched area, or source was an
-                        # untracked temp file (e.g. excluded upload staging file).
-                        if is_dir:
-                            await handlers.on_dir_created(path, True)
-                        else:
-                            await handlers.on_new_file(path)
-
-                elif Mask.CREATE in event.mask:
+            elif Mask.MOVED_TO in event.mask:
+                if event.cookie in pending_from:
+                    src_path, _ = pending_from.pop(event.cookie)
+                    handlers.on_move(src_path, path, is_dir)
+                else:
                     if is_dir:
-                        await handlers.on_dir_created(path, False)
-                    # else: ignore — file is empty/partial; metadata arrives on CLOSE_WRITE
+                        handlers.on_dir_created(path, True)
+                    else:
+                        handlers.on_new_file(path)
 
-                elif Mask.DELETE in event.mask:
-                    await handlers.on_delete(path, is_dir)
+            elif Mask.CREATE in event.mask:
+                if is_dir:
+                    handlers.on_dir_created(path, False)
+                # else: ignore — file is empty/partial; metadata arrives on CLOSE_WRITE
 
-                elif Mask.CLOSE_WRITE in event.mask:
-                    await handlers.on_close_write(path)
+            elif Mask.DELETE in event.mask:
+                handlers.on_delete(path, is_dir)
 
-            except TimeoutError:
-                raise  # DB unresponsive — let TaskGroup crash the app; Docker restarts
-            except Exception:
-                _L.exception("event handler failed: %s %s", event.mask, path)
+            elif Mask.CLOSE_WRITE in event.mask:
+                handlers.on_close_write(path)

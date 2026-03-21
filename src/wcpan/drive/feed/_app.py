@@ -108,10 +108,18 @@ async def _app_lifecycle(app: web.Application) -> AsyncGenerator[None, None]:
         app[APP_KEY_READY] = ready_event
         app[APP_WATCH_ROOT_PATHS] = build_watch_root_paths(config)
 
-        from ._watcher import WatcherHandlers, make_watcher_backend
+        from ._watcher import (
+            WatcherConsumer,
+            WatcherHandlers,
+            create_event_queue,
+            make_watcher_backend,
+        )
 
         watcher_fn = make_watcher_backend(config.watcher)
-        watcher_handlers = WatcherHandlers(
+        event_queue = create_event_queue()
+        watcher_handlers = WatcherHandlers(event_queue=event_queue)
+        watcher_consumer = WatcherConsumer(
+            event_queue=event_queue,
             storage=storage,
             off_main=off_main,
             metadata_queue=metadata_queue,
@@ -151,6 +159,9 @@ async def _app_lifecycle(app: web.Application) -> AsyncGenerator[None, None]:
                 ),
             )
         )
+
+        # Consumer drives the actual async processing of watcher events
+        await stack.enter_async_context(_background(group, watcher_consumer.consume()))
 
         # Startup: scan → drain queues → set ready
         await stack.enter_async_context(

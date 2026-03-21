@@ -1,3 +1,5 @@
+import asyncio
+from dataclasses import dataclass
 from functools import partial
 from logging import getLogger
 from pathlib import Path
@@ -14,6 +16,47 @@ from .._types import MetadataQueue, NodeRecord, WriteQueue
 _L = getLogger(__name__)
 
 
+@dataclass(frozen=True)
+class _NewFileEvent:
+    path: Path
+
+
+@dataclass(frozen=True)
+class _CloseWriteEvent:
+    path: Path
+
+
+@dataclass(frozen=True)
+class _DeleteEvent:
+    path: Path
+    is_dir: bool
+
+
+@dataclass(frozen=True)
+class _MoveEvent:
+    src: Path
+    dst: Path
+    is_dir: bool
+
+
+@dataclass(frozen=True)
+class _DirCreatedEvent:
+    path: Path
+    scan_contents: bool
+
+
+type _Event = (
+    _NewFileEvent | _CloseWriteEvent | _DeleteEvent | _MoveEvent | _DirCreatedEvent
+)
+
+
+type EventQueue = asyncio.Queue[_Event]
+
+
+def create_event_queue() -> EventQueue:
+    return asyncio.Queue()  # unbounded — backends must never block on put
+
+
 def get_parent_node_id(path: Path) -> str | None:
     try:
         st = path.parent.stat()
@@ -23,22 +66,83 @@ def get_parent_node_id(path: Path) -> str | None:
 
 
 class WatcherHandlers:
+    """Producer: translates backend calls into events on the shared queue."""
+
+    def __init__(self, *, event_queue: asyncio.Queue[_Event]) -> None:
+        self._queue = event_queue
+
+    def on_new_file(self, path: Path) -> None:
+        self._queue.put_nowait(_NewFileEvent(path=path))
+
+    def on_close_write(self, path: Path) -> None:
+        self._queue.put_nowait(_CloseWriteEvent(path=path))
+
+    def on_delete(self, path: Path, is_dir: bool) -> None:
+        self._queue.put_nowait(_DeleteEvent(path=path, is_dir=is_dir))
+
+    def on_move(self, src: Path, dst: Path, is_dir: bool) -> None:
+        self._queue.put_nowait(_MoveEvent(src=src, dst=dst, is_dir=is_dir))
+
+    def on_dir_created(self, path: Path, scan_contents: bool) -> None:
+        self._queue.put_nowait(_DirCreatedEvent(path=path, scan_contents=scan_contents))
+
+    def flush_pending_moves(self, pending_from: dict[int, tuple[Path, bool]]) -> None:
+        for cookie, (stale_path, stale_is_dir) in list(pending_from.items()):
+            del pending_from[cookie]
+            self._queue.put_nowait(_DeleteEvent(path=stale_path, is_dir=stale_is_dir))
+
+
+class WatcherConsumer:
+    """Consumer: processes events from the shared queue, performing DB and queue writes."""
+
     def __init__(
         self,
         *,
+        event_queue: asyncio.Queue[_Event],
         storage: Storage,
         off_main: OffMainThread,
         metadata_queue: MetadataQueue,
         write_queue: WriteQueue,
         exclude: tuple[str, ...] = (),
     ) -> None:
+        self._queue = event_queue
         self._storage = storage
         self._off_main = off_main
         self._metadata_queue = metadata_queue
         self._write_queue = write_queue
         self._exclude = exclude
 
-    async def on_new_file(self, path: Path) -> None:
+    async def consume(self) -> None:
+        while True:
+            event = await self._queue.get()
+            try:
+                await self._dispatch(event)
+            except TimeoutError:
+                raise
+            except Exception:
+                _L.exception("event dispatch failed: %s", event)
+            finally:
+                self._queue.task_done()
+
+    async def _dispatch(self, event: _Event) -> None:
+        match event:
+            case _NewFileEvent(path=path):
+                await self._process_new_file(path)
+            case _CloseWriteEvent(path=path):
+                await self._process_close_write(path)
+            case _DeleteEvent(path=path, is_dir=is_dir):
+                await self._process_delete(path, is_dir)
+            case _DirCreatedEvent(path=path, scan_contents=scan_contents):
+                await self._process_dir_created(path, scan_contents)
+            case _MoveEvent(src=src, dst=dst, is_dir=is_dir):
+                tracked = await self._process_move(src, dst, is_dir)
+                if not tracked:
+                    if is_dir:
+                        await self._process_dir_created(dst, True)
+                    else:
+                        await self._process_new_file(dst)
+
+    async def _process_new_file(self, path: Path) -> None:
         """Queue a complete file (new to DB) for metadata computation — no DB write until metadata is ready."""
         if is_path_excluded(path, self._exclude):
             return
@@ -70,7 +174,7 @@ class WatcherHandlers:
         )
         await self._metadata_queue.put((node, path))
 
-    async def on_close_write(self, path: Path) -> None:
+    async def _process_close_write(self, path: Path) -> None:
         """Queue file node for metadata computation on CLOSE_WRITE — no DB write until metadata is ready."""
         if is_path_excluded(path, self._exclude):
             return
@@ -121,7 +225,7 @@ class WatcherHandlers:
             )
         await self._metadata_queue.put((node, path))
 
-    async def on_delete(self, path: Path, is_dir: bool) -> None:
+    async def _process_delete(self, path: Path, is_dir: bool) -> None:
         """Emit remove for a deleted file or directory (recursively for dirs)."""
         _L.debug("delete: %s (is_dir=%s)", path, is_dir)
         try:
@@ -148,7 +252,7 @@ class WatcherHandlers:
             partial(self._storage.delete_nodes_and_emit_changes, node_ids)
         )
 
-    async def on_move(self, src: Path, dst: Path, is_dir: bool) -> bool:
+    async def _process_move(self, src: Path, dst: Path, is_dir: bool) -> bool:
         """Update parent_id + name for a renamed/moved node (no re-hash needed).
 
         Returns False if the source node was not in the DB (caller should treat dst
@@ -190,7 +294,7 @@ class WatcherHandlers:
         )
         return True
 
-    async def on_dir_created(self, path: Path, scan_contents: bool) -> None:
+    async def _process_dir_created(self, path: Path, scan_contents: bool) -> None:
         """Insert a directory node into the DB.
 
         scan_contents=True when the directory was moved in from outside the watched
@@ -275,13 +379,3 @@ class WatcherHandlers:
                     stack.append((entry, eid))
                 else:
                     await self._metadata_queue.put((enode, entry))
-
-    async def flush_pending_moves(
-        self, pending_from: dict[int, tuple[Path, bool]]
-    ) -> None:
-        for cookie, (stale_path, stale_is_dir) in list(pending_from.items()):
-            del pending_from[cookie]
-            try:
-                await self.on_delete(stale_path, stale_is_dir)
-            except Exception:
-                _L.exception("delete failed for stale move: %s", stale_path)
