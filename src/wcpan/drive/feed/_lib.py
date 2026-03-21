@@ -1,3 +1,4 @@
+import asyncio
 from collections.abc import Callable
 from concurrent.futures import Executor
 from datetime import datetime, timezone
@@ -8,6 +9,9 @@ from typing import TypeGuard
 from ._types import MergedChange, NodeRecord, RemovedChange, UpdatedChange
 
 
+_OFF_MAIN_TIMEOUT = 60.0  # seconds — crash if any DB op hangs this long
+
+
 class OffMainThread:
     def __init__(self, pool: Executor) -> None:
         self._pool = pool
@@ -15,6 +19,16 @@ class OffMainThread:
     async def __call__[**A, R](
         self, fn: Callable[A, R], *args: A.args, **kwargs: A.kwargs
     ) -> R:
+        from asyncio import get_running_loop
+
+        loop = get_running_loop()
+        async with asyncio.timeout(_OFF_MAIN_TIMEOUT):
+            return await loop.run_in_executor(self._pool, partial(fn, *args, **kwargs))
+
+    async def untimed[**A, R](
+        self, fn: Callable[A, R], *args: A.args, **kwargs: A.kwargs
+    ) -> R:
+        """For legitimately long-running work (e.g. file hashing) that must not time out."""
         from asyncio import get_running_loop
 
         loop = get_running_loop()

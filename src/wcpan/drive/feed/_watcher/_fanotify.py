@@ -245,6 +245,8 @@ class FanotifyWatcher:
                                 pending_from,
                                 handlers,
                             )
+                        except TimeoutError:
+                            raise  # DB unresponsive — let TaskGroup crash the app; Docker restarts
                         except Exception:
                             _L.exception(
                                 "event handler failed: mask=%#x path=%s", mask, path

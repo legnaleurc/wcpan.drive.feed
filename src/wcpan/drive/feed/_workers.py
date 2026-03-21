@@ -53,7 +53,7 @@ async def metadata_worker(
         pending_node, path = await metadata_queue.get()
         _L.debug("metadata dequeue: %s", path)
         try:
-            meta = await off_main(compute_file_metadata, path)
+            meta = await off_main.untimed(compute_file_metadata, path)
             node = NodeRecord(
                 node_id=pending_node.node_id,
                 parent_id=pending_node.parent_id,

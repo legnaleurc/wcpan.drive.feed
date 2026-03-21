@@ -84,5 +84,7 @@ async def run_watcher(
                 elif Mask.CLOSE_WRITE in event.mask:
                     await handlers.on_close_write(path)
 
+            except TimeoutError:
+                raise  # DB unresponsive — let TaskGroup crash the app; Docker restarts
             except Exception:
                 _L.exception("event handler failed: %s %s", event.mask, path)

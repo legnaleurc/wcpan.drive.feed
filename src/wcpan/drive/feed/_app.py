@@ -44,7 +44,7 @@ def _managed_pool() -> Generator[ThreadPoolExecutor, None, None]:
     try:
         yield pool
     finally:
-        pool.shutdown(wait=True, cancel_futures=True)
+        pool.shutdown(wait=False, cancel_futures=True)
 
 
 @asynccontextmanager
