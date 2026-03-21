@@ -40,8 +40,8 @@ class WatcherHandlers:
         self._write_queue = write_queue
         self._exclude = exclude
 
-    async def on_file_stub(self, path: Path) -> None:
-        """Queue a pending file node for metadata computation — no DB write until metadata is ready."""
+    async def on_new_file(self, path: Path) -> None:
+        """Queue a complete file (new to DB) for metadata computation — no DB write until metadata is ready."""
         if is_excluded(path.name, self._exclude):
             return
         try:

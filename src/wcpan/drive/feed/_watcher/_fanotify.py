@@ -276,19 +276,18 @@ async def _dispatch(
                 if is_dir:
                     await handlers.on_dir_created(path, True)
                 else:
-                    await handlers.on_file_stub(path)
+                    await handlers.on_new_file(path)
         else:
             # No matching MOVED_FROM — treat as new arrival
             if is_dir:
                 await handlers.on_dir_created(path, True)
             else:
-                await handlers.on_file_stub(path)
+                await handlers.on_new_file(path)
 
     elif mask & FAN_CREATE:
         if is_dir:
             await handlers.on_dir_created(path, False)
-        else:
-            await handlers.on_file_stub(path)
+        # else: ignore — file may be partial; metadata arrives on CLOSE_WRITE
 
     elif mask & FAN_DELETE:
         await handlers.on_delete(path, is_dir)

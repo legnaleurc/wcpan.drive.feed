@@ -71,7 +71,7 @@ async def run_watcher(
                         if is_dir:
                             await handlers.on_dir_created(path, True)
                         else:
-                            await handlers.on_file_stub(path)
+                            await handlers.on_new_file(path)
 
                 elif Mask.CREATE in event.mask:
                     if is_dir:

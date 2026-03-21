@@ -95,9 +95,9 @@ def _insert_file_node(dsn: str, path: Path, parent_id: str) -> str:
     return node_id
 
 
-class TestOnFileStub(unittest.IsolatedAsyncioTestCase):
-    async def test_creates_stub_node(self):
-        """on_file_stub queues a pending node for metadata — does NOT write to DB."""
+class TestOnNewFile(unittest.IsolatedAsyncioTestCase):
+    async def test_creates_node_for_metadata(self):
+        """on_new_file queues a complete file (new to DB) for metadata — does NOT write to DB."""
         with create_db_sandbox() as dsn, create_fs_sandbox() as tmp:
             f = tmp / "hello.txt"
             f.write_text("hello")
@@ -110,7 +110,7 @@ class TestOnFileStub(unittest.IsolatedAsyncioTestCase):
             handlers = WatcherHandlers(
                 storage=storage, off_main=off_main, metadata_queue=mq, write_queue=wq
             )
-            await handlers.on_file_stub(f)
+            await handlers.on_new_file(f)
 
             # File stays out of DB until metadata worker runs
             node = get_node_by_id(dsn, node_id_from_stat(f.stat()))
@@ -120,7 +120,7 @@ class TestOnFileStub(unittest.IsolatedAsyncioTestCase):
             pool.shutdown(wait=False)
 
     async def test_no_change_emitted(self):
-        """File stubs are silent — change is emitted only after metadata completes."""
+        """New files are silent — change is emitted only after metadata completes."""
         with create_db_sandbox() as dsn, create_fs_sandbox() as tmp:
             f = tmp / "hello.txt"
             f.write_text("hello")
@@ -133,7 +133,7 @@ class TestOnFileStub(unittest.IsolatedAsyncioTestCase):
             handlers = WatcherHandlers(
                 storage=storage, off_main=off_main, metadata_queue=mq, write_queue=wq
             )
-            await handlers.on_file_stub(f)
+            await handlers.on_new_file(f)
 
             changes, _ = get_changes_since(dsn, 0)
             node_ids = {node_id_from_change(c) for c in changes}
@@ -149,11 +149,11 @@ class TestOnFileStub(unittest.IsolatedAsyncioTestCase):
             handlers = WatcherHandlers(
                 storage=storage, off_main=off_main, metadata_queue=mq, write_queue=wq
             )
-            await handlers.on_file_stub(tmp / "nonexistent.txt")
+            await handlers.on_new_file(tmp / "nonexistent.txt")
             pool.shutdown(wait=False)
 
     async def test_parent_not_in_db_queues_for_deferred_check(self):
-        """Parent DB check is deferred to write time; on_file_stub still queues the node."""
+        """Parent DB check is deferred to write time; on_new_file still queues the node for metadata."""
         with create_db_sandbox() as dsn, create_fs_sandbox() as tmp:
             sub = tmp / "subdir"
             sub.mkdir()
@@ -167,7 +167,7 @@ class TestOnFileStub(unittest.IsolatedAsyncioTestCase):
             handlers = WatcherHandlers(
                 storage=storage, off_main=off_main, metadata_queue=mq, write_queue=wq
             )
-            await handlers.on_file_stub(f)
+            await handlers.on_new_file(f)
 
             # File is still queued — parent check happens in write_worker
             self.assertFalse(mq.empty())
@@ -493,7 +493,7 @@ class TestExcludeOnStartup(unittest.IsolatedAsyncioTestCase):
 
 
 class TestExcludeOnEvents(unittest.IsolatedAsyncioTestCase):
-    async def test_file_stub_excluded_name(self):
+    async def test_new_file_excluded_name(self):
         with create_db_sandbox() as dsn, create_fs_sandbox() as tmp:
             f = tmp / "Thumbs.db"
             f.write_bytes(b"")
@@ -506,7 +506,7 @@ class TestExcludeOnEvents(unittest.IsolatedAsyncioTestCase):
             handlers = WatcherHandlers(
                 storage=storage, off_main=off_main, metadata_queue=mq, write_queue=wq
             )
-            await handlers.on_file_stub(f)
+            await handlers.on_new_file(f)
 
             self.assertTrue(mq.empty())
             pool.shutdown(wait=False)
@@ -657,7 +657,7 @@ class TestExcludeUnderExcludedFolder(unittest.IsolatedAsyncioTestCase):
     is an excluded (and therefore absent) directory still insert a node with
     parent_id=NULL instead of being silently dropped."""
 
-    async def test_file_stub_under_excluded_dir(self):
+    async def test_new_file_under_excluded_dir(self):
         """File under excluded dir is queued to mq; write is dropped because parent not in DB."""
         with create_db_sandbox() as dsn, create_fs_sandbox() as tmp:
             ea_dir = tmp / "@eaDir"
@@ -674,7 +674,7 @@ class TestExcludeUnderExcludedFolder(unittest.IsolatedAsyncioTestCase):
             handlers = WatcherHandlers(
                 storage=storage, off_main=off_main, metadata_queue=mq, write_queue=wq
             )
-            await handlers.on_file_stub(thumb)
+            await handlers.on_new_file(thumb)
 
             # File is queued — parent check (and drop) happens in write_worker
             self.assertFalse(mq.empty())
@@ -768,8 +768,8 @@ class TestTmpExclude(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(mq.empty())
             pool.shutdown(wait=False)
 
-    async def test_file_stub_on_tmp_is_ignored(self):
-        """on_file_stub on a .__tmp__ file puts nothing on metadata_queue."""
+    async def test_file_on_tmp_is_ignored(self):
+        """on_new_file on a .__tmp__ file puts nothing on metadata_queue."""
         with create_db_sandbox() as dsn, create_fs_sandbox() as tmp:
             staging = tmp / "video.__tmp__"
             staging.write_bytes(b"data")
@@ -782,7 +782,7 @@ class TestTmpExclude(unittest.IsolatedAsyncioTestCase):
             handlers = WatcherHandlers(
                 storage=storage, off_main=off_main, metadata_queue=mq, write_queue=wq
             )
-            await handlers.on_file_stub(staging)
+            await handlers.on_new_file(staging)
 
             self.assertTrue(mq.empty())
             pool.shutdown(wait=False)
@@ -844,8 +844,8 @@ class TestDeferredParentCheck(unittest.IsolatedAsyncioTestCase):
             )
             pool.shutdown(wait=False)
 
-    async def test_file_stub_queued_when_parent_pending(self):
-        """on_dir_created(parent) + on_file_stub(file) without draining — file ends up in mq."""
+    async def test_file_queued_when_parent_pending(self):
+        """on_dir_created(parent) + on_new_file(file) without draining — file ends up in mq."""
         with create_db_sandbox() as dsn, create_fs_sandbox() as tmp:
             parent_dir = tmp / "parent"
             parent_dir.mkdir()
@@ -864,7 +864,7 @@ class TestDeferredParentCheck(unittest.IsolatedAsyncioTestCase):
             # Enqueue parent dir write (not yet committed)
             await handlers.on_dir_created(parent_dir, False)
             # Queue file for metadata — parent DB check is deferred to write_worker
-            await handlers.on_file_stub(f)
+            await handlers.on_new_file(f)
 
             self.assertFalse(mq.empty())
             pool.shutdown(wait=False)
