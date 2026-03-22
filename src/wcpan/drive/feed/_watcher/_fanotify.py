@@ -277,7 +277,10 @@ def _dispatch(
 
     elif mask & FAN_CREATE:
         if is_dir:
-            handlers.on_dir_created(path, False)
+            # scan_contents=True: the directory may already contain files
+            # (e.g. moved in via SMB copy-then-delete) that won't generate
+            # CLOSE_WRITE events, so we must scan on creation.
+            handlers.on_dir_created(path, True)
         # else: ignore — file may be partial; metadata arrives on CLOSE_WRITE
 
     elif mask & FAN_DELETE:

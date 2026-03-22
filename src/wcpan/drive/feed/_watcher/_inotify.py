@@ -92,7 +92,11 @@ async def run_watcher(
 
             elif Mask.CREATE in event.mask:
                 if is_dir:
-                    handlers.on_dir_created(path, False)
+                    # scan_contents=True: the directory may already contain files
+                    # (e.g. moved in via SMB copy-then-delete) that won't generate
+                    # CLOSE_WRITE events, so we must scan on creation.
+                    # For empty directories this is a harmless no-op scan.
+                    handlers.on_dir_created(path, True)
                 # else: ignore — file is empty/partial; metadata arrives on CLOSE_WRITE
 
             elif Mask.DELETE in event.mask:

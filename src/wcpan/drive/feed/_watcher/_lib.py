@@ -300,11 +300,71 @@ class WatcherConsumer:
                     child_ids,
                 )
             )
+            # Files that were queued for metadata computation before the move
+            # (e.g. still hashing) have stale paths and will fail when the
+            # metadata worker tries to read them.  Scan the destination now and
+            # re-queue any entry whose node_id is not yet in the DB so the
+            # worker picks them up at the correct new path.
+            await self._scan_untracked_contents(dst, node.node_id, set(child_ids))
         else:
             await self._write_queue.put(
                 partial(self._storage.upsert_node_if_parent_known_and_emit_change, node)
             )
         return True
+
+    async def _scan_untracked_contents(
+        self, directory: Path, dir_node_id: str, known_ids: set[str]
+    ) -> None:
+        """Re-queue files under *directory* that are not yet recorded in the DB.
+
+        Used after a directory move to catch files whose metadata was still
+        being computed (and whose queued path is now stale).
+        """
+        stack = [(directory, dir_node_id)]
+        while stack:
+            cur_dir, cur_parent_id = stack.pop()
+            try:
+                entries = list(cur_dir.iterdir())
+            except OSError:
+                continue
+            for entry in entries:
+                if is_excluded(entry.name, self._exclude):
+                    continue
+                try:
+                    est = entry.stat()
+                except OSError:
+                    continue
+                eid = node_id_from_stat(est)
+                if eid in known_ids:
+                    continue
+                ectime, emtime = stat_to_times(est)
+                enode = NodeRecord(
+                    node_id=eid,
+                    parent_id=cur_parent_id,
+                    name=entry.name,
+                    is_directory=entry.is_dir(),
+                    ctime=ectime,
+                    mtime=emtime,
+                    mime_type="",
+                    hash="",
+                    size=est.st_size if not entry.is_dir() else 0,
+                    is_image=False,
+                    is_video=False,
+                    width=0,
+                    height=0,
+                    ms_duration=0,
+                )
+                if entry.is_dir():
+                    await self._write_queue.put(
+                        partial(
+                            self._storage.upsert_node_if_parent_known_and_emit_change,
+                            enode,
+                        )
+                    )
+                    stack.append((entry, eid))
+                else:
+                    _L.debug("re-queuing untracked file after dir move: %s", entry)
+                    await self._metadata_queue.put((enode, entry))
 
     async def _process_dir_created(self, path: Path, scan_contents: bool) -> None:
         """Insert a directory node into the DB.
