@@ -28,6 +28,11 @@ async def events_with_move_timeout[T](
                 yield await anext(src)
         except TimeoutError:
             yield None
+        except (ValueError, FileNotFoundError) as e:
+            # asyncinotify tried to add a recursive watch on a newly created
+            # directory that was already deleted or is not a directory
+            # (race condition with temporary directories) — skip and continue.
+            _L.debug("skipping transient directory watch error: %s", e)
         except StopAsyncIteration:
             return
 
