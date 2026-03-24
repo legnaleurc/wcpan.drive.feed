@@ -132,6 +132,12 @@ class Storage:
     ) -> None:
         bulk_scan_flush(self._dsn, upserts, deletes, changes)
 
+    def cleanup_dangling_nodes(self) -> int:
+        return cleanup_dangling_nodes(self._dsn)
+
+    def reset_change_history(self) -> int:
+        return reset_change_history(self._dsn)
+
 
 @contextmanager
 def _connect(dsn: str, *, timeout: float = 5.0):
@@ -524,6 +530,50 @@ def bulk_delete_nodes(dsn: str, node_ids: list[str]) -> None:
             "DELETE FROM nodes WHERE node_id = ?",
             [(nid,) for nid in node_ids],
         )
+
+
+_DANGLING_NODES_SQL = """
+    WITH RECURSIVE reachable(node_id) AS (
+        SELECT ?
+        UNION ALL
+        SELECT n.node_id FROM nodes n
+        JOIN reachable r ON n.parent_id = r.node_id
+    )
+    SELECT node_id FROM nodes
+    WHERE node_id NOT IN (SELECT node_id FROM reachable)
+"""
+
+
+def cleanup_dangling_nodes(dsn: str) -> int:
+    """Emit removal changes for and delete all nodes not reachable from the super-root.
+    Returns the number of nodes removed."""
+    with read_write(dsn) as cursor:
+        cursor.execute(_DANGLING_NODES_SQL, (SUPER_ROOT_ID,))
+        dangling = [row["node_id"] for row in cursor.fetchall()]
+        if not dangling:
+            return 0
+        cursor.executemany(
+            "INSERT INTO changes (node_id, is_removed) VALUES (?, 1)",
+            [(nid,) for nid in dangling],
+        )
+        cursor.executemany(
+            "DELETE FROM nodes WHERE node_id = ?",
+            [(nid,) for nid in dangling],
+        )
+    return len(dangling)
+
+
+def reset_change_history(dsn: str) -> int:
+    """Clear the changes table and re-insert one update record per non-super-root node.
+    Returns the number of change records inserted."""
+    with read_write(dsn) as cursor:
+        cursor.execute("DELETE FROM changes")
+        cursor.execute(
+            "INSERT INTO changes (node_id, is_removed)"
+            " SELECT node_id, 0 FROM nodes WHERE node_id != ?",
+            (SUPER_ROOT_ID,),
+        )
+        return cursor.rowcount
 
 
 def bulk_scan_flush(

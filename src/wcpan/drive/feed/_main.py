@@ -9,6 +9,7 @@ from aiohttp import web
 from wcpan.logging import ConfigBuilder
 
 from ._app import create_app
+from ._db import Storage, cleanup_dangling_nodes, reset_change_history
 from ._types import Config, FanotifyWatcherConfig, InotifyWatcherConfig
 
 
@@ -22,6 +23,14 @@ def main() -> None:
         default="/data/server.yaml",
         help="Path to YAML config file (default: /data/server.yaml)",
     )
+    subparsers = parser.add_subparsers(dest="command", required=True)
+    subparsers.add_parser("serve", help="Run the feed server")
+    subparsers.add_parser(
+        "gc", help="Remove dangling nodes unreachable from super-root"
+    )
+    subparsers.add_parser(
+        "squash", help="[DANGER] Reset change history to a single update per node"
+    )
     args = parser.parse_args()
 
     config_path = Path(args.config)
@@ -32,6 +41,15 @@ def main() -> None:
     with open(config_path) as f:
         raw = yaml.safe_load(f)
 
+    if args.command == "gc":
+        _cmd_gc(raw)
+        return
+
+    if args.command == "squash":
+        _cmd_squash(raw)
+        return
+
+    # serve
     raw_watcher = raw.get("watcher")
     if not raw_watcher:
         print("Config error: 'watcher' is required", file=sys.stderr)
@@ -68,3 +86,16 @@ def main() -> None:
     app = create_app(config)
     _L.info("listening on %s:%s", config.host, config.port)
     web.run_app(app, host=config.host, port=config.port, print=None)
+
+
+def _cmd_gc(raw: dict) -> None:
+    dsn = raw["database_url"]
+    count = cleanup_dangling_nodes(dsn)
+    print(f"Removed {count} dangling node(s).")
+
+
+def _cmd_squash(raw: dict) -> None:
+    print("WARNING: squash resets all consumer cursors.", file=sys.stderr)
+    dsn = raw["database_url"]
+    count = reset_change_history(dsn)
+    print(f"Reset change history: {count} update record(s) written.")
