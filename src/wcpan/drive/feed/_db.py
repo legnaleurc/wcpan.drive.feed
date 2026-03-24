@@ -141,7 +141,7 @@ class Storage:
 
 @contextmanager
 def _connect(dsn: str, *, timeout: float = 5.0):
-    with closing(connect(dsn, timeout=timeout)) as db:
+    with closing(connect(dsn, timeout=timeout, autocommit=False)) as db:
         db.row_factory = Row
         yield db
 
@@ -532,7 +532,8 @@ def bulk_delete_nodes(dsn: str, node_ids: list[str]) -> None:
         )
 
 
-_DANGLING_NODES_SQL = """
+_GC_CREATE_SQL = """
+    CREATE TEMP TABLE _dangling AS
     WITH RECURSIVE reachable(node_id) AS (
         SELECT ?
         UNION ALL
@@ -548,19 +549,19 @@ def cleanup_dangling_nodes(dsn: str) -> int:
     """Emit removal changes for and delete all nodes not reachable from the super-root.
     Returns the number of nodes removed."""
     with read_write(dsn) as cursor:
-        cursor.execute(_DANGLING_NODES_SQL, (SUPER_ROOT_ID,))
-        dangling = [row["node_id"] for row in cursor.fetchall()]
-        if not dangling:
-            return 0
-        cursor.executemany(
-            "INSERT INTO changes (node_id, is_removed) VALUES (?, 1)",
-            [(nid,) for nid in dangling],
-        )
-        cursor.executemany(
-            "DELETE FROM nodes WHERE node_id = ?",
-            [(nid,) for nid in dangling],
-        )
-    return len(dangling)
+        cursor.execute(_GC_CREATE_SQL, (SUPER_ROOT_ID,))
+        cursor.execute("SELECT COUNT(*) FROM temp._dangling")
+        count = cursor.fetchone()[0]
+        if count > 0:
+            cursor.execute(
+                "INSERT INTO changes (node_id, is_removed)"
+                " SELECT node_id, 1 FROM temp._dangling"
+            )
+            cursor.execute(
+                "DELETE FROM nodes WHERE node_id IN (SELECT node_id FROM temp._dangling)"
+            )
+        cursor.execute("DROP TABLE temp._dangling")
+    return count
 
 
 def reset_change_history(dsn: str) -> int:
