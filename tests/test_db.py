@@ -10,11 +10,13 @@ from wcpan.drive.feed._db import (
     bulk_delete_nodes,
     bulk_emit_changes,
     bulk_upsert_nodes,
+    cleanup_dangling_nodes,
     emit_change,
     get_all_nodes,
     get_changes_since,
     get_cursor,
     get_node_by_id,
+    reset_change_history,
     upsert_node,
     upsert_node_and_emit_change,
 )
@@ -301,6 +303,85 @@ class TestConcurrentReadWrite(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(result), 51)
             for node in nodes:
                 self.assertIn(node.node_id, result)
+
+
+class TestCleanupDanglingNodes(unittest.TestCase):
+    def test_no_dangling_nodes_returns_zero(self):
+        with create_db_sandbox() as dsn:
+            upsert_node(dsn, _make_node("node-001"))
+            count = cleanup_dangling_nodes(dsn)
+            self.assertEqual(count, 0)
+            self.assertIsNotNone(get_node_by_id(dsn, "node-001"))
+
+    def test_removes_node_with_broken_parent(self):
+        with create_db_sandbox() as dsn:
+            # Insert a node whose parent doesn't exist (orphan)
+            orphan = _make_node("orphan-001", parent_id="nonexistent-parent")
+            upsert_node(dsn, orphan)
+            count = cleanup_dangling_nodes(dsn)
+            self.assertEqual(count, 1)
+            self.assertIsNone(get_node_by_id(dsn, "orphan-001"))
+
+    def test_emits_removal_changes_for_dangling_nodes(self):
+        with create_db_sandbox() as dsn:
+            orphan = _make_node("orphan-001", parent_id="nonexistent-parent")
+            upsert_node(dsn, orphan)
+            cleanup_dangling_nodes(dsn)
+            changes, _ = get_changes_since(dsn, 0)
+            self.assertEqual(len(changes), 1)
+            self.assertTrue(changes[0].removed)
+
+    def test_keeps_reachable_nodes(self):
+        with create_db_sandbox() as dsn:
+            reachable = _make_node("node-001")
+            orphan = _make_node("orphan-001", parent_id="nonexistent-parent")
+            upsert_node(dsn, reachable)
+            upsert_node(dsn, orphan)
+            count = cleanup_dangling_nodes(dsn)
+            self.assertEqual(count, 1)
+            self.assertIsNotNone(get_node_by_id(dsn, "node-001"))
+            self.assertIsNone(get_node_by_id(dsn, "orphan-001"))
+
+    def test_does_not_remove_super_root(self):
+        with create_db_sandbox() as dsn:
+            cleanup_dangling_nodes(dsn)
+            self.assertIsNotNone(get_node_by_id(dsn, SUPER_ROOT_ID))
+
+
+class TestResetChangeHistory(unittest.TestCase):
+    def test_clears_existing_changes(self):
+        with create_db_sandbox() as dsn:
+            node = _make_node("node-001")
+            upsert_node(dsn, node)
+            emit_change(dsn, "node-001", is_removed=False)
+            emit_change(dsn, "node-001", is_removed=False)
+            emit_change(dsn, "node-001", is_removed=False)
+            reset_change_history(dsn)
+            # After reset, cursor should reflect only one change per node
+            changes, _ = get_changes_since(dsn, 0)
+            ids = [node_id_from_change(c) for c in changes]
+            self.assertEqual(ids.count("node-001"), 1)
+
+    def test_returns_count_of_inserted_records(self):
+        with create_db_sandbox() as dsn:
+            upsert_node(dsn, _make_node("node-001"))
+            upsert_node(dsn, _make_node("node-002"))
+            count = reset_change_history(dsn)
+            self.assertEqual(count, 2)
+
+    def test_super_root_not_included_in_changes(self):
+        with create_db_sandbox() as dsn:
+            reset_change_history(dsn)
+            changes, _ = get_changes_since(dsn, 0)
+            ids = [node_id_from_change(c) for c in changes]
+            self.assertNotIn(SUPER_ROOT_ID, ids)
+
+    def test_all_new_changes_are_updates(self):
+        with create_db_sandbox() as dsn:
+            upsert_node(dsn, _make_node("node-001"))
+            reset_change_history(dsn)
+            changes, _ = get_changes_since(dsn, 0)
+            self.assertTrue(all(not c.removed for c in changes))
 
 
 class TestBulkDeleteNodes(unittest.TestCase):
