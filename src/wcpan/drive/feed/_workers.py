@@ -11,18 +11,19 @@ from ._types import MetadataQueue, NodeRecord, WriteQueue
 
 _L = getLogger(__name__)
 
-NUM_META_WORKERS = os.process_cpu_count() or 1
-_META_QUEUE_SIZE = NUM_META_WORKERS * 2
-_WRITE_QUEUE_SIZE = NUM_META_WORKERS * 2
 _WAL_CHECKPOINT_INTERVAL = 300.0  # seconds
 
 
-def create_metadata_queue() -> MetadataQueue:
-    return asyncio.Queue(maxsize=_META_QUEUE_SIZE)
+def resolve_meta_workers(config_value: int | None) -> int:
+    return config_value or os.process_cpu_count() or 1
 
 
-def create_write_queue() -> WriteQueue:
-    return asyncio.Queue(maxsize=_WRITE_QUEUE_SIZE)
+def create_metadata_queue(num_workers: int) -> MetadataQueue:
+    return asyncio.Queue(maxsize=num_workers * 2)
+
+
+def create_write_queue(num_workers: int) -> WriteQueue:
+    return asyncio.Queue(maxsize=num_workers * 2)
 
 
 async def checkpoint_worker(write_queue: WriteQueue, storage: Storage) -> None:

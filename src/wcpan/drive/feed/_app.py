@@ -23,11 +23,11 @@ from ._scanner import (
 )
 from ._types import Config, MetadataQueue, WriteQueue
 from ._workers import (
-    NUM_META_WORKERS,
     checkpoint_worker,
     create_metadata_queue,
     create_write_queue,
     metadata_worker,
+    resolve_meta_workers,
     write_worker,
 )
 
@@ -102,8 +102,9 @@ async def _app_lifecycle(app: web.Application) -> AsyncGenerator[None, None]:
         await off_main(storage.upsert_super_root)
 
         # 3. Queues and ready event
-        metadata_queue = create_metadata_queue()
-        write_queue = create_write_queue()
+        num_workers = resolve_meta_workers(config.metadata_workers)
+        metadata_queue = create_metadata_queue(num_workers)
+        write_queue = create_write_queue(num_workers)
         ready_event = asyncio.Event()
         app[APP_KEY_READY] = ready_event
         app[APP_WATCH_ROOT_PATHS] = build_watch_root_paths(config)
@@ -141,7 +142,7 @@ async def _app_lifecycle(app: web.Application) -> AsyncGenerator[None, None]:
         )
 
         # N metadata workers — each computes file metadata and enqueues its own write
-        for _ in range(NUM_META_WORKERS):
+        for _ in range(num_workers):
             await stack.enter_async_context(
                 _background(
                     group,

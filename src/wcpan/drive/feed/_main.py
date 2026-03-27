@@ -73,6 +73,7 @@ def main() -> None:
         watches=dict(raw.get("watches", {})),
         exclude=tuple(raw.get("exclude", [])),
         log_path=raw.get("log_path"),
+        metadata_workers=raw.get("metadata_workers") or None,
         watcher=watcher,
     )
 

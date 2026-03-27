@@ -4,3 +4,4 @@ database_url: /data/db/feed.db
 watches:
   media: /mnt/media
   documents: /mnt/documents
+# metadata_workers: 4  # optional, defaults to os.process_cpu_count() or 1

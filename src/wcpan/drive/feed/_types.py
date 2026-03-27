@@ -27,6 +27,7 @@ class Config:
     watches: dict[str, str]  # namespace -> path
     exclude: tuple[str, ...] = ()
     log_path: str | None = None
+    metadata_workers: int | None = None
     watcher: WatcherConfig
 
 
