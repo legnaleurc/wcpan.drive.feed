@@ -186,8 +186,13 @@ def checkpoint(dsn: str) -> None:
     checkpoint runs; if the process is killed first, committed-but-not-
     checkpointed data survives in the WAL and is replayed on next open — but
     only if the WAL file is not deleted.
+
+    Uses read_only rather than read_write because PRAGMA wal_checkpoint takes
+    effect immediately on execution — no COMMIT is needed. read_write would
+    call db.commit() while the PRAGMA result row is still pending on the
+    cursor, raising "cannot commit transaction - SQL statements in progress".
     """
-    with read_write(dsn) as cursor:
+    with read_only(dsn) as cursor:
         cursor.execute("PRAGMA wal_checkpoint(TRUNCATE)")
 
 
