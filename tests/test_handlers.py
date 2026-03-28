@@ -52,7 +52,7 @@ def _make_app_with_mocks(
 
     storage = MagicMock()
     storage.get_cursor.return_value = cursor_val
-    storage.get_changes_since.side_effect = lambda c: (changes, max(cursor_val, c))
+    storage.get_changes_since.side_effect = lambda c, l: (changes, max(cursor_val, c))
     storage.get_node_by_id.return_value = root_node
 
     off_main = AsyncMock()
@@ -150,3 +150,44 @@ class TestChangesRemoved(AioHTTPTestCase):
         self.assertEqual(len(data["changes"]), 1)
         self.assertTrue(data["changes"][0]["removed"])
         self.assertNotIn("node", data["changes"][0])
+
+
+class TestChangesMaxSize(AioHTTPTestCase):
+    async def get_application(self):
+        return _make_app_with_mocks(cursor_val=10)
+
+    async def test_invalid_max_size_falls_back_to_default(self):
+        resp = await self.client.get("/api/v1/changes?max_size=abc")
+        self.assertEqual(resp.status, 200)
+
+    async def test_zero_max_size_falls_back_to_default(self):
+        resp = await self.client.get("/api/v1/changes?max_size=0")
+        self.assertEqual(resp.status, 200)
+
+    async def test_negative_max_size_falls_back_to_default(self):
+        resp = await self.client.get("/api/v1/changes?max_size=-1")
+        self.assertEqual(resp.status, 200)
+
+    async def test_over_limit_max_size_falls_back_to_default(self):
+        resp = await self.client.get("/api/v1/changes?max_size=2000")
+        self.assertEqual(resp.status, 200)
+
+
+class TestChangesMaxSizeForwarded(AioHTTPTestCase):
+    async def get_application(self):
+        self._captured_limit: list[int] = []
+
+        def spy_get_changes(c: int, l: int):
+            self._captured_limit.append(l)
+            return [], c
+
+        app = _make_app_with_mocks(cursor_val=10)
+        from wcpan.drive.feed._keys import APP_STORAGE
+
+        app[APP_STORAGE].get_changes_since.side_effect = spy_get_changes
+        return app
+
+    async def test_valid_max_size_is_passed_to_storage(self):
+        resp = await self.client.get("/api/v1/changes?max_size=5")
+        self.assertEqual(resp.status, 200)
+        self.assertEqual(self._captured_limit, [5])

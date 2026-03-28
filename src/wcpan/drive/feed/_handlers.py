@@ -34,6 +34,9 @@ async def handle_cursor(request: web.Request) -> web.Response:
     return web.json_response({"cursor": cursor})
 
 
+_MAX_LIMIT = 1000
+
+
 async def handle_changes(request: web.Request) -> web.Response:
     storage = request.app[APP_STORAGE]
     off_main = request.app[APP_OFF_MAIN]
@@ -44,7 +47,14 @@ async def handle_changes(request: web.Request) -> web.Response:
     except ValueError:
         raise web.HTTPBadRequest(reason="invalid cursor")
 
-    changes, new_cursor = await off_main(storage.get_changes_since, cursor)
+    try:
+        limit = int(request.rel_url.query.get("max_size", str(_MAX_LIMIT)))
+    except ValueError:
+        limit = _MAX_LIMIT
+    if limit <= 0 or limit > _MAX_LIMIT:
+        limit = _MAX_LIMIT
+
+    changes, new_cursor = await off_main(storage.get_changes_since, cursor, limit)
 
     result: list[dict[str, object]] = []
     for change in changes:

@@ -166,7 +166,7 @@ class TestOnNewFile(unittest.IsolatedAsyncioTestCase):
             handlers.on_new_file(f)
             await _drain_consumer_queue(consumer)
 
-            changes, _ = get_changes_since(dsn, 0)
+            changes, _ = get_changes_since(dsn, 0, 1000)
             node_ids = {node_id_from_change(c) for c in changes}
             self.assertNotIn(node_id_from_stat(f.stat()), node_ids)
             pool.shutdown(wait=False)
@@ -220,7 +220,7 @@ class TestOnCloseWrite(unittest.IsolatedAsyncioTestCase):
             # Node is queued for metadata — no DB write yet
             self.assertFalse(mq.empty())
             # Change is emitted by the metadata worker, not on_close_write itself
-            changes, _ = get_changes_since(dsn, 0)
+            changes, _ = get_changes_since(dsn, 0, 1000)
             node_ids = {node_id_from_change(c) for c in changes}
             self.assertNotIn(file_id, node_ids)
             pool.shutdown(wait=False)
@@ -260,7 +260,7 @@ class TestOnDelete(unittest.IsolatedAsyncioTestCase):
             await _drain_consumer_queue(consumer)
             await _drain_write_queue(wq)
 
-            changes, _ = get_changes_since(dsn, 0)
+            changes, _ = get_changes_since(dsn, 0, 1000)
             removed = [
                 c for c in changes if is_removed_change(c) and c.node_id == file_id
             ]
@@ -291,7 +291,7 @@ class TestOnDelete(unittest.IsolatedAsyncioTestCase):
             await _drain_consumer_queue(consumer)
             await _drain_write_queue(wq)
 
-            changes, _ = get_changes_since(dsn, 0)
+            changes, _ = get_changes_since(dsn, 0, 1000)
             removed_ids = {c.node_id for c in changes if is_removed_change(c)}
             self.assertIn(dir_id, removed_ids)
             self.assertIn(file_id, removed_ids)
@@ -391,7 +391,7 @@ class TestOnMove(unittest.IsolatedAsyncioTestCase):
             await _drain_consumer_queue(consumer)
             await _drain_write_queue(wq)
 
-            changes, _ = get_changes_since(dsn, 0)
+            changes, _ = get_changes_since(dsn, 0, 1000)
             updated_ids = {
                 node_id_from_change(c) for c in changes if not is_removed_change(c)
             }
@@ -421,7 +421,7 @@ class TestOnMove(unittest.IsolatedAsyncioTestCase):
             await _drain_consumer_queue(consumer)
             await _drain_write_queue(wq)
 
-            changes, _ = get_changes_since(dsn, 0)
+            changes, _ = get_changes_since(dsn, 0, 1000)
             node_ids = {node_id_from_change(c) for c in changes}
             self.assertNotIn(dir_id, node_ids)
             pool.shutdown(wait=False)
@@ -463,7 +463,7 @@ class TestOnDirCreated(unittest.IsolatedAsyncioTestCase):
             await _drain_write_queue(wq)
 
             dir_id = node_id_from_stat(new_dir.stat())
-            changes, _ = get_changes_since(dsn, 0)
+            changes, _ = get_changes_since(dsn, 0, 1000)
             node_ids = {node_id_from_change(c) for c in changes}
             self.assertIn(dir_id, node_ids)
             pool.shutdown(wait=False)
@@ -583,7 +583,7 @@ class TestFlushPendingMoves(unittest.IsolatedAsyncioTestCase):
             await _drain_write_queue(wq)
 
             self.assertEqual(pending_from, {})
-            changes, _ = get_changes_since(dsn, 0)
+            changes, _ = get_changes_since(dsn, 0, 1000)
             removed = [
                 c for c in changes if is_removed_change(c) and c.node_id == file_id
             ]

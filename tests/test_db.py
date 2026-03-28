@@ -111,7 +111,7 @@ class TestChanges(unittest.TestCase):
             upsert_node(dsn, node)
             emit_change(dsn, "node-001", is_removed=False)
 
-            changes, new_cursor = get_changes_since(dsn, 0)
+            changes, new_cursor = get_changes_since(dsn, 0, 1000)
             self.assertEqual(len(changes), 1)
 
             change = changes[0]
@@ -129,7 +129,7 @@ class TestChanges(unittest.TestCase):
             emit_change(dsn, "node-001", is_removed=False)
             emit_change(dsn, "node-001", is_removed=False)
 
-            changes, _ = get_changes_since(dsn, 0)
+            changes, _ = get_changes_since(dsn, 0, 1000)
             # Should be merged to 1 change
             self.assertEqual(len(changes), 1)
 
@@ -144,7 +144,7 @@ class TestChanges(unittest.TestCase):
             delete_node(dsn, "node-001")
             emit_change(dsn, "node-001", is_removed=True)
 
-            changes, _ = get_changes_since(dsn, 0)
+            changes, _ = get_changes_since(dsn, 0, 1000)
             # Last event is is_removed=True → returns removed change
             self.assertEqual(len(changes), 1)
             self.assertTrue(changes[0].removed)
@@ -159,7 +159,7 @@ class TestChanges(unittest.TestCase):
             cursor_after_first = get_cursor(dsn)
 
             emit_change(dsn, "node-002", is_removed=False)
-            changes, new_cursor = get_changes_since(dsn, cursor_after_first)
+            changes, new_cursor = get_changes_since(dsn, cursor_after_first, 1000)
             self.assertEqual(len(changes), 1)
 
             change = changes[0]
@@ -169,9 +169,25 @@ class TestChanges(unittest.TestCase):
 
     def test_no_changes_returns_same_cursor(self):
         with create_db_sandbox() as dsn:
-            changes, new_cursor = get_changes_since(dsn, 0)
+            changes, new_cursor = get_changes_since(dsn, 0, 1000)
             self.assertEqual(changes, [])
             self.assertEqual(new_cursor, 0)
+
+    def test_limit_restricts_rows_and_advances_cursor_partially(self):
+        with create_db_sandbox() as dsn:
+            for i in range(1, 6):
+                node = _make_node(f"node-{i:03d}", name=f"file{i}.txt")
+                upsert_node(dsn, node)
+                emit_change(dsn, f"node-{i:03d}", is_removed=False)
+
+            changes, new_cursor = get_changes_since(dsn, 0, 3)
+            self.assertLessEqual(len(changes), 3)
+            self.assertGreater(new_cursor, 0)
+
+            # Remaining changes are accessible from the new cursor
+            remaining, final_cursor = get_changes_since(dsn, new_cursor, 1000)
+            self.assertEqual(len(changes) + len(remaining), 5)
+            self.assertGreater(final_cursor, new_cursor)
 
 
 class TestGetAllNodes(unittest.TestCase):
@@ -232,7 +248,7 @@ class TestBulkEmitChanges(unittest.TestCase):
 
             bulk_emit_changes(dsn, [("node-001", False), ("node-002", True)])
 
-            changes, _ = get_changes_since(dsn, 0)
+            changes, _ = get_changes_since(dsn, 0, 1000)
             node_ids = {node_id_from_change(c) for c in changes}
             self.assertIn("node-001", node_ids)
             self.assertIn("node-002", node_ids)
@@ -327,7 +343,7 @@ class TestCleanupDanglingNodes(unittest.TestCase):
             orphan = _make_node("orphan-001", parent_id="nonexistent-parent")
             upsert_node(dsn, orphan)
             cleanup_dangling_nodes(dsn)
-            changes, _ = get_changes_since(dsn, 0)
+            changes, _ = get_changes_since(dsn, 0, 1000)
             self.assertEqual(len(changes), 1)
             self.assertTrue(changes[0].removed)
 
@@ -358,7 +374,7 @@ class TestResetChangeHistory(unittest.TestCase):
             emit_change(dsn, "node-001", is_removed=False)
             reset_change_history(dsn)
             # After reset, cursor should reflect only one change per node
-            changes, _ = get_changes_since(dsn, 0)
+            changes, _ = get_changes_since(dsn, 0, 1000)
             ids = [node_id_from_change(c) for c in changes]
             self.assertEqual(ids.count("node-001"), 1)
 
@@ -372,7 +388,7 @@ class TestResetChangeHistory(unittest.TestCase):
     def test_super_root_not_included_in_changes(self):
         with create_db_sandbox() as dsn:
             reset_change_history(dsn)
-            changes, _ = get_changes_since(dsn, 0)
+            changes, _ = get_changes_since(dsn, 0, 1000)
             ids = [node_id_from_change(c) for c in changes]
             self.assertNotIn(SUPER_ROOT_ID, ids)
 
@@ -380,7 +396,7 @@ class TestResetChangeHistory(unittest.TestCase):
         with create_db_sandbox() as dsn:
             upsert_node(dsn, _make_node("node-001"))
             reset_change_history(dsn)
-            changes, _ = get_changes_since(dsn, 0)
+            changes, _ = get_changes_since(dsn, 0, 1000)
             self.assertTrue(all(not c.removed for c in changes))
 
 

@@ -160,7 +160,7 @@ class TestDeletedDirCleansSubtree(unittest.IsolatedAsyncioTestCase):
             self.assertIsNone(get_node_by_id(dsn, file_id))
 
             # Removal changes must be emitted for both
-            changes, _ = get_changes_since(dsn, 0)
+            changes, _ = get_changes_since(dsn, 0, 1000)
             removed_ids = {c.node_id for c in changes if is_removed_change(c)}
             self.assertIn(dir_id, removed_ids)
             self.assertIn(file_id, removed_ids)

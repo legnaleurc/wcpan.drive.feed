@@ -97,8 +97,10 @@ class Storage:
     def get_cursor(self) -> int:
         return get_cursor(self._dsn)
 
-    def get_changes_since(self, cursor: int) -> tuple[list[MergedChange], int]:
-        return get_changes_since(self._dsn, cursor)
+    def get_changes_since(
+        self, cursor: int, limit: int
+    ) -> tuple[list[MergedChange], int]:
+        return get_changes_since(self._dsn, cursor, limit)
 
     def get_all_node_ids_under(self, parent_id: str) -> list[str]:
         return get_all_node_ids_under(self._dsn, parent_id)
@@ -382,11 +384,14 @@ def get_cursor(dsn: str) -> int:
     return int(row[0])
 
 
-def get_changes_since(dsn: str, cursor: int) -> tuple[list[MergedChange], int]:
+def get_changes_since(
+    dsn: str, cursor: int, limit: int
+) -> tuple[list[MergedChange], int]:
     with read_only(dsn) as c:
         c.execute(
-            "SELECT change_id, node_id, is_removed FROM changes WHERE change_id > ? ORDER BY change_id",
-            (cursor,),
+            "SELECT change_id, node_id, is_removed FROM changes"
+            " WHERE change_id > ? ORDER BY change_id LIMIT ?",
+            (cursor, limit),
         )
         rows = c.fetchall()
 
