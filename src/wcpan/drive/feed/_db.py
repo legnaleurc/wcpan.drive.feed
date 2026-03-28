@@ -99,7 +99,7 @@ class Storage:
 
     def get_changes_since(
         self, cursor: int, limit: int
-    ) -> tuple[list[MergedChange], int]:
+    ) -> tuple[list[MergedChange], int, bool]:
         return get_changes_since(self._dsn, cursor, limit)
 
     def get_all_node_ids_under(self, parent_id: str) -> list[str]:
@@ -386,7 +386,7 @@ def get_cursor(dsn: str) -> int:
 
 def get_changes_since(
     dsn: str, cursor: int, limit: int
-) -> tuple[list[MergedChange], int]:
+) -> tuple[list[MergedChange], int, bool]:
     with read_only(dsn) as c:
         c.execute(
             "SELECT change_id, node_id, is_removed FROM changes"
@@ -396,7 +396,9 @@ def get_changes_since(
         rows = c.fetchall()
 
     if not rows:
-        return [], cursor
+        return [], cursor, False
+
+    has_more = len(rows) == limit
 
     last_event: dict[str, tuple[bool, int]] = {}
     max_id = cursor
@@ -425,7 +427,7 @@ def get_changes_since(
             if node is not None:
                 result.append(UpdatedChange(removed=False, node=node))
 
-    return result, max_id
+    return result, max_id, has_more
 
 
 def get_all_node_ids_under(dsn: str, parent_id: str) -> list[str]:

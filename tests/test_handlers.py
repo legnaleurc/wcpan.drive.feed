@@ -52,7 +52,11 @@ def _make_app_with_mocks(
 
     storage = MagicMock()
     storage.get_cursor.return_value = cursor_val
-    storage.get_changes_since.side_effect = lambda c, l: (changes, max(cursor_val, c))
+    storage.get_changes_since.side_effect = lambda c, l: (
+        changes,
+        max(cursor_val, c),
+        False,
+    )
     storage.get_node_by_id.return_value = root_node
 
     off_main = AsyncMock()
@@ -96,6 +100,7 @@ class TestChangesHandler(AioHTTPTestCase):
         data = await resp.json()
         self.assertIn("cursor", data)
         self.assertIn("changes", data)
+        self.assertIn("has_more", data)
         self.assertEqual(len(data["changes"]), 1)
         self.assertFalse(data["changes"][0]["removed"])
         self.assertEqual(data["changes"][0]["node"]["id"], "node-001")
@@ -173,13 +178,28 @@ class TestChangesMaxSize(AioHTTPTestCase):
         self.assertEqual(resp.status, 200)
 
 
+class TestChangesHasMore(AioHTTPTestCase):
+    async def get_application(self):
+        from wcpan.drive.feed._keys import APP_STORAGE
+
+        app = _make_app_with_mocks(cursor_val=10)
+        app[APP_STORAGE].get_changes_since.side_effect = lambda c, l: ([], 10, True)
+        return app
+
+    async def test_has_more_true_is_returned_in_response(self):
+        resp = await self.client.get("/api/v1/changes")
+        self.assertEqual(resp.status, 200)
+        data = await resp.json()
+        self.assertTrue(data["has_more"])
+
+
 class TestChangesMaxSizeForwarded(AioHTTPTestCase):
     async def get_application(self):
         self._captured_limit: list[int] = []
 
         def spy_get_changes(c: int, l: int):
             self._captured_limit.append(l)
-            return [], c
+            return [], c, False
 
         app = _make_app_with_mocks(cursor_val=10)
         from wcpan.drive.feed._keys import APP_STORAGE

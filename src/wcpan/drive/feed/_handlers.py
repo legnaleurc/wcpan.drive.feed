@@ -54,7 +54,9 @@ async def handle_changes(request: web.Request) -> web.Response:
     if limit <= 0 or limit > _MAX_LIMIT:
         limit = _MAX_LIMIT
 
-    changes, new_cursor = await off_main(storage.get_changes_since, cursor, limit)
+    changes, new_cursor, has_more = await off_main(
+        storage.get_changes_since, cursor, limit
+    )
 
     result: list[dict[str, object]] = []
     for change in changes:
@@ -68,7 +70,9 @@ async def handle_changes(request: web.Request) -> web.Response:
             ),
         )
 
-    return web.json_response({"cursor": new_cursor, "changes": result})
+    return web.json_response(
+        {"cursor": new_cursor, "changes": result, "has_more": has_more}
+    )
 
 
 async def handle_node_path(request: web.Request) -> web.Response:
