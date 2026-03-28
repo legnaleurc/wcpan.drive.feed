@@ -1,6 +1,6 @@
 [project]
 name = "wcpan-drive-feed"
-version = "1.4.0"
+version = "1.4.1"
 description = "HTTP server exposing local filesystem as a wcpan.drive feed API"
 readme = "README.md"
 license = "MIT"
