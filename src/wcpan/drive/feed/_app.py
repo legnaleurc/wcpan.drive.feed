@@ -16,12 +16,8 @@ from ._keys import (
     APP_WATCH_ROOT_PATHS,
 )
 from ._lib import OffMainThread
-from ._scanner import (
-    build_watch_root_paths,
-    reconcile_stale_roots,
-    scan_all_watch_paths,
-)
-from ._types import Config, MetadataQueue, WriteQueue
+from ._scanner import Scanner, build_watch_root_paths
+from ._types import Config
 from ._workers import (
     checkpoint_worker,
     create_metadata_queue,
@@ -56,23 +52,6 @@ async def _background[T](
         yield
     finally:
         task.cancel()
-
-
-async def _startup(
-    storage: Storage,
-    off_main: OffMainThread,
-    config: Config,
-    write_queue: WriteQueue,
-    metadata_queue: MetadataQueue,
-    ready_event: asyncio.Event,
-) -> None:
-    await reconcile_stale_roots(storage, off_main, config, write_queue)
-    await scan_all_watch_paths(storage, off_main, config, write_queue, metadata_queue)
-    _L.info("startup scan complete; waiting for queues to drain")
-    await metadata_queue.join()
-    await write_queue.join()
-    _L.info("queues idle; server is ready")
-    ready_event.set()
 
 
 @web.middleware
@@ -119,6 +98,7 @@ async def _app_lifecycle(app: web.Application) -> AsyncGenerator[None, None]:
         watcher_fn = make_watcher_backend(config.watcher)
         event_queue = create_event_queue()
         watcher_handlers = WatcherHandlers(event_queue=event_queue)
+        scanner = Scanner(storage, off_main, config, write_queue, metadata_queue)
         watcher_consumer = WatcherConsumer(
             event_queue=event_queue,
             storage=storage,
@@ -166,12 +146,7 @@ async def _app_lifecycle(app: web.Application) -> AsyncGenerator[None, None]:
 
         # Startup: scan → drain queues → set ready
         await stack.enter_async_context(
-            _background(
-                group,
-                _startup(
-                    storage, off_main, config, write_queue, metadata_queue, ready_event
-                ),
-            )
+            _background(group, scanner.startup(ready_event))
         )
 
         yield
