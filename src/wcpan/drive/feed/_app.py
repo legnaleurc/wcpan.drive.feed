@@ -98,7 +98,13 @@ async def _app_lifecycle(app: web.Application) -> AsyncGenerator[None, None]:
         watcher_fn = make_watcher_backend(config.watcher)
         event_queue = create_event_queue()
         watcher_handlers = WatcherHandlers(event_queue=event_queue)
-        scanner = Scanner(storage, off_main, config, write_queue, metadata_queue)
+        scanner = Scanner(
+            storage=storage,
+            off_main=off_main,
+            config=config,
+            write_queue=write_queue,
+            metadata_queue=metadata_queue,
+        )
         watcher_consumer = WatcherConsumer(
             event_queue=event_queue,
             storage=storage,

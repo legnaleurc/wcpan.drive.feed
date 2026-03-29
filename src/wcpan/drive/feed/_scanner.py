@@ -16,6 +16,7 @@ _L = getLogger(__name__)
 class Scanner:
     def __init__(
         self,
+        *,
         storage: Storage,
         off_main: OffMainThread,
         config: Config,

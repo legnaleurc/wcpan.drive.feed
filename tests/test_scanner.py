@@ -104,7 +104,9 @@ def _make_scanner(
     wq: WriteQueue,
     mq: MetadataQueue,
 ) -> Scanner:
-    return Scanner(storage, None, config, wq, mq)  # type: ignore[arg-type]
+    return Scanner(
+        storage=storage, off_main=None, config=config, write_queue=wq, metadata_queue=mq
+    )  # type: ignore[arg-type]
 
 
 async def _drain_write_queue(wq: WriteQueue) -> None:
