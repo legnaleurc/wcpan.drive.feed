@@ -180,7 +180,8 @@ class TestCleanupStaleNodes(unittest.IsolatedAsyncioTestCase):
             globally_seen: set[str] = set()
             storage = _make_storage(dsn)
             wq = _make_write_queue()
-            scanner = _make_scanner(storage, config, wq, _make_metadata_queue())
+            mq = _make_metadata_queue()
+            scanner = _make_scanner(storage, config, wq, mq)
 
             # Scan each new watch root
             await scanner._scan_directory(dir_a, a_id, snapshot, globally_seen)
@@ -188,6 +189,7 @@ class TestCleanupStaleNodes(unittest.IsolatedAsyncioTestCase):
             await scanner._cleanup_stale_nodes(snapshot, globally_seen)
             await _drain_write_queue(wq)
 
+            self.assertTrue(mq.empty(), "cached files should not be recomputed")
             self.assertIsNone(get_node_by_id(dsn, root_id))
             self.assertIsNotNone(get_node_by_id(dsn, a_id))
             self.assertIsNotNone(get_node_by_id(dsn, b_id))
@@ -217,12 +219,15 @@ class TestCleanupStaleNodes(unittest.IsolatedAsyncioTestCase):
             globally_seen: set[str] = set()
             storage = _make_storage(dsn)
             wq = _make_write_queue()
-            scanner = _make_scanner(storage, config, wq, _make_metadata_queue())
+            mq = _make_metadata_queue()
+            scanner = _make_scanner(storage, config, wq, mq)
 
             # Scan the new parent root
             await scanner._scan_directory(root, new_root_id, snapshot, globally_seen)
             await scanner._cleanup_stale_nodes(snapshot, globally_seen)
             await _drain_write_queue(wq)
+
+            self.assertTrue(mq.empty(), "cached files should not be recomputed")
 
             # a and b re-parented under root, content preserved
             node_a = get_node_by_id(dsn, a_id)
@@ -359,3 +364,102 @@ class TestDeletedDirCleansSubtree(unittest.IsolatedAsyncioTestCase):
             removed_ids = {c.node_id for c in changes if is_removed_change(c)}
             self.assertIn(dir_id, removed_ids)
             self.assertIn(file_id, removed_ids)
+
+
+class TestCacheReuseOnConfigChange(unittest.IsolatedAsyncioTestCase):
+    """Cached metadata is reused when the watch configuration changes."""
+
+    async def test_remove_namespace_add_subdir_preserves_metadata(self):
+        """Old {a: /root} → new {b: /root/sub}: cached files in sub are not recomputed."""
+        with create_db_sandbox() as dsn, create_fs_sandbox() as tmp:
+            root = tmp / "root"
+            root.mkdir()
+            sub = root / "sub"
+            sub.mkdir()
+            f = sub / "file.txt"
+            f.write_text("content")
+
+            # Old state: broad root watched, sub and file are cached
+            root_id = _insert_dir_node(dsn, root, SUPER_ROOT_ID)
+            sub_id = _insert_dir_node(dsn, sub, root_id)
+            file_id = _insert_file_node(dsn, f, sub_id)
+
+            # New config: narrowed to sub-directory only
+            config = _make_config({"b": str(sub)})
+            snapshot = get_all_nodes(dsn)
+            globally_seen: set[str] = set()
+            storage = _make_storage(dsn)
+            wq = _make_write_queue()
+            mq = _make_metadata_queue()
+            scanner = _make_scanner(storage, config, wq, mq)
+
+            await scanner._scan_directory(sub, sub_id, snapshot, globally_seen)
+            await scanner._cleanup_stale_nodes(snapshot, globally_seen)
+            await _drain_write_queue(wq)
+
+            self.assertTrue(mq.empty(), "cached files should not be recomputed")
+            node = get_node_by_id(dsn, file_id)
+            self.assertIsNotNone(node)
+            self.assertEqual(node.hash, "old_hash")
+
+    async def test_add_subdir_as_new_namespace_preserves_metadata(self):
+        """Old {a: /root} → new {a: /root, b: /root/sub}: no recompute for sub's files."""
+        with create_db_sandbox() as dsn, create_fs_sandbox() as tmp:
+            root = tmp / "root"
+            root.mkdir()
+            sub = root / "sub"
+            sub.mkdir()
+            f = sub / "file.txt"
+            f.write_text("content")
+
+            # Old state: broad root watched, sub and file are cached
+            root_id = _insert_dir_node(dsn, root, SUPER_ROOT_ID)
+            sub_id = _insert_dir_node(dsn, sub, root_id)
+            file_id = _insert_file_node(dsn, f, sub_id)
+
+            # New config: keep root, also add sub as separate namespace
+            config = _make_config({"a": str(root), "b": str(sub)})
+            snapshot = get_all_nodes(dsn)
+            globally_seen: set[str] = set()
+            storage = _make_storage(dsn)
+            wq = _make_write_queue()
+            mq = _make_metadata_queue()
+            scanner = _make_scanner(storage, config, wq, mq)
+
+            await scanner._scan_directory(root, root_id, snapshot, globally_seen)
+            await scanner._scan_directory(sub, sub_id, snapshot, globally_seen)
+            await _drain_write_queue(wq)
+
+            self.assertTrue(mq.empty(), "cached files should not be recomputed")
+            node = get_node_by_id(dsn, file_id)
+            self.assertIsNotNone(node)
+            self.assertEqual(node.hash, "old_hash")
+
+    async def test_namespace_rename_preserves_metadata(self):
+        """Old {old_key: /root} → new {new_key: /root}: no recompute for cached files."""
+        with create_db_sandbox() as dsn, create_fs_sandbox() as tmp:
+            root = tmp / "root"
+            root.mkdir()
+            f = root / "file.txt"
+            f.write_text("content")
+
+            # Old state: root watched under key "old_key"
+            root_id = _insert_dir_node(dsn, root, SUPER_ROOT_ID)
+            file_id = _insert_file_node(dsn, f, root_id)
+
+            # New config: same path, different namespace key
+            config = _make_config({"new_key": str(root)})
+            snapshot = get_all_nodes(dsn)
+            globally_seen: set[str] = set()
+            storage = _make_storage(dsn)
+            wq = _make_write_queue()
+            mq = _make_metadata_queue()
+            scanner = _make_scanner(storage, config, wq, mq)
+
+            await scanner._scan_directory(root, root_id, snapshot, globally_seen)
+            await _drain_write_queue(wq)
+
+            self.assertTrue(mq.empty(), "cached files should not be recomputed")
+            node = get_node_by_id(dsn, file_id)
+            self.assertIsNotNone(node)
+            self.assertEqual(node.hash, "old_hash")
