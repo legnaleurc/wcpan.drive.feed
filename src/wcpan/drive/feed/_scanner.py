@@ -162,10 +162,15 @@ class Scanner:
                             )
                             pending_dir_and_delete_changes.append((entry_id, False))
                         else:
-                            _L.debug("scan unchanged: %s", entry)
+                            # _L.debug("scan unchanged: %s", entry)
+                            pass
                         continue  # unchanged
                     # mtime changed — queue for metadata (no DB write until metadata is ready)
                     _L.debug("scan update: %s", entry)
+
+                    import pdb
+                    pdb.set_trace()
+
                     pending_meta.append(
                         (
                             replace(
@@ -180,14 +185,15 @@ class Scanner:
                         )
                     )
                 else:
-                    import pdb
-                    pdb.set_trace()
-
                     # New node
                     globally_seen.add(entry_id)
                     _L.debug(
                         "scan new %s: %s", "dir" if entry.is_dir() else "file", entry
                     )
+
+                    import pdb
+                    pdb.set_trace()
+
                     node = NodeRecord(
                         node_id=entry_id,
                         parent_id=parent_id,
