@@ -9,7 +9,7 @@ from aiohttp import web
 from wcpan.logging import ConfigBuilder
 
 from ._app import create_app
-from ._db import Storage, cleanup_dangling_nodes, reset_change_history
+from ._db import cleanup_dangling_nodes, reset_change_history
 from ._types import Config, FanotifyWatcherConfig, InotifyWatcherConfig
 
 
@@ -74,6 +74,7 @@ def main() -> None:
         exclude=tuple(raw.get("exclude", [])),
         log_path=raw.get("log_path"),
         metadata_workers=raw.get("metadata_workers") or None,
+        skip_initial_hash=bool(raw.get("skip_initial_hash", False)),
         watcher=watcher,
     )
 

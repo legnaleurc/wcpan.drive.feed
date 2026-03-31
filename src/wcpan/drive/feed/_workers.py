@@ -45,16 +45,19 @@ async def write_worker(write_queue: WriteQueue, off_main: OffMainThread) -> None
 
 
 async def metadata_worker(
+    *,
     metadata_queue: MetadataQueue,
     write_queue: WriteQueue,
     storage: Storage,
     off_main: OffMainThread,
 ) -> None:
     while True:
-        pending_node, path = await metadata_queue.get()
+        pending_node, path, skip_hash = await metadata_queue.get()
         _L.debug("metadata dequeue: %s", path)
         try:
-            meta = await off_main.untimed(compute_file_metadata, path)
+            meta = await off_main.untimed(
+                compute_file_metadata, path, skip_hash=skip_hash
+            )
             node = NodeRecord(
                 node_id=pending_node.node_id,
                 parent_id=pending_node.parent_id,

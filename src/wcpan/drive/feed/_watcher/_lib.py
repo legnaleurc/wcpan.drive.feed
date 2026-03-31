@@ -172,7 +172,7 @@ class WatcherConsumer:
             height=0,
             ms_duration=0,
         )
-        await self._metadata_queue.put((node, path))
+        await self._metadata_queue.put((node, path, False))
 
     async def _process_close_write(self, path: Path) -> None:
         """Queue file node for metadata computation on CLOSE_WRITE — no DB write until metadata is ready."""
@@ -223,7 +223,7 @@ class WatcherConsumer:
                 height=existing.height,
                 ms_duration=existing.ms_duration,
             )
-        await self._metadata_queue.put((node, path))
+        await self._metadata_queue.put((node, path, False))
 
     async def _process_delete(self, path: Path, is_dir: bool) -> None:
         """Emit remove for a deleted file or directory (recursively for dirs)."""
@@ -364,7 +364,7 @@ class WatcherConsumer:
                     stack.append((entry, eid))
                 else:
                     _L.debug("re-queuing untracked file after dir move: %s", entry)
-                    await self._metadata_queue.put((enode, entry))
+                    await self._metadata_queue.put((enode, entry, False))
 
     async def _process_dir_created(self, path: Path, scan_contents: bool) -> None:
         """Insert a directory node into the DB.
@@ -450,4 +450,4 @@ class WatcherConsumer:
                     )
                     stack.append((entry, eid))
                 else:
-                    await self._metadata_queue.put((enode, entry))
+                    await self._metadata_queue.put((enode, entry, False))

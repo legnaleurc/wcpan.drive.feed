@@ -227,8 +227,9 @@ class Scanner:
             )
         )
 
-        for item in pending_meta:
-            await self._metadata_queue.put(item)
+        skip_hash = self._config.skip_initial_hash
+        for node, path in pending_meta:
+            await self._metadata_queue.put((node, path, skip_hash))
 
 
 def build_watch_root_paths(config: Config) -> dict[str, Path]:

@@ -8,14 +8,14 @@ from ._types import FileMetadata
 _L = getLogger(__name__)
 
 
-def compute_file_metadata(path: Path) -> FileMetadata:
+def compute_file_metadata(path: Path, *, skip_hash: bool = False) -> FileMetadata:
     import magic
 
     _L.debug("computing metadata: %s", path)
     size = path.stat().st_size
     mime_type = magic.from_file(path, mime=True)  # type: ignore
     _L.debug("mime type: %s size: %d path: %s", mime_type, size, path)
-    hash_ = _compute_md5(path)
+    hash_ = "" if skip_hash else _compute_md5(path)
     _L.debug("hash: %s path: %s", hash_, path)
     is_image, is_video, w, h, ms = _get_media_info(path, mime_type)
     _L.debug(

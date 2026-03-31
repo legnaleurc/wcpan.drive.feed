@@ -28,6 +28,7 @@ class Config:
     exclude: tuple[str, ...] = ()
     log_path: str | None = None
     metadata_workers: int | None = None
+    skip_initial_hash: bool = False
     watcher: WatcherConfig
 
 
@@ -99,7 +100,7 @@ class NodeParams(TypedDict):
 
 
 type WriteQueue = asyncio.Queue[Callable[[], None]]
-type MetadataQueue = asyncio.Queue[tuple[NodeRecord, Path]]
+type MetadataQueue = asyncio.Queue[tuple[NodeRecord, Path, bool]]
 
 
 @dataclass(frozen=True, kw_only=True)

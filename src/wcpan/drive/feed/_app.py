@@ -132,7 +132,12 @@ async def _app_lifecycle(app: web.Application) -> AsyncGenerator[None, None]:
             await stack.enter_async_context(
                 _background(
                     group,
-                    metadata_worker(metadata_queue, write_queue, storage, off_main),
+                    metadata_worker(
+                        metadata_queue=metadata_queue,
+                        write_queue=write_queue,
+                        storage=storage,
+                        off_main=off_main,
+                    ),
                 )
             )
 
