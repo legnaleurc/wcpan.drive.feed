@@ -136,9 +136,6 @@ class Scanner:
                 ctime, mtime = stat_to_times(st)
                 existing = snapshot.get(entry_id)
 
-                import pdb
-                pdb.set_trace()
-
                 if existing is not None:
                     globally_seen.add(entry_id)
                     if entry.is_dir():
@@ -183,6 +180,9 @@ class Scanner:
                         )
                     )
                 else:
+                    import pdb
+                    pdb.set_trace()
+
                     # New node
                     globally_seen.add(entry_id)
                     _L.debug(
