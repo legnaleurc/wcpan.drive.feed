@@ -168,8 +168,7 @@ class Scanner:
                     # mtime changed — queue for metadata (no DB write until metadata is ready)
                     _L.debug("scan update: %s", entry)
 
-                    import pdb
-                    pdb.set_trace()
+                    breakpoint()
 
                     pending_meta.append(
                         (
@@ -191,8 +190,7 @@ class Scanner:
                         "scan new %s: %s", "dir" if entry.is_dir() else "file", entry
                     )
 
-                    import pdb
-                    pdb.set_trace()
+                    breakpoint()
 
                     node = NodeRecord(
                         node_id=entry_id,
