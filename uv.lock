@@ -642,7 +642,7 @@ wheels = [
 
 [[package]]
 name = "wcpan-drive-feed"
-version = "1.5.0"
+version = "1.6.0"
 source = { editable = "." }
 dependencies = [
     { name = "aiohttp" },
